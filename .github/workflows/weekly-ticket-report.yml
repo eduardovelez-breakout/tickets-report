@@ -1,0 +1,51 @@
+name: Weekly Ticket Report
+
+on:
+  schedule:
+    # Fridays at 9:00 AM America/Chicago (14:00 UTC during CST; adjust if needed)
+    - cron: '0 14 * * 5'
+  workflow_dispatch:
+
+jobs:
+  export-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write Google service account key
+        run: |
+          cat > google_service_account.json <<'EOF'
+          ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+          EOF
+
+      - name: Export weekly tickets CSV
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python export_weekly_tickets.py \
+            --token "$HUBSPOT_PAT" \
+            --gemini-api-key "$GEMINI_API_KEY" \
+            --workers 10
+
+      - name: Upload CSV to Google Sheets
+        env:
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        run: |
+          python upload_to_google_sheets.py \
+            --sheet-id "$GOOGLE_SHEET_ID" \
+            --csv-path "Tickets - Last 7 Days.csv" \
+            --credentials google_service_account.json \
+            --tab-prefix "Weekly Tickets"
