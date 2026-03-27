@@ -433,6 +433,7 @@ def main() -> int:
     parser.add_argument("--test-20-oldest", action="store_true")
     parser.add_argument("--debug-conversation", action="store_true")
     parser.add_argument("--debug-gemini", action="store_true")
+    parser.add_argument("--log-gemini", action="store_true")
     parser.add_argument("--skip-gemini", action="store_true")
 
     parser.add_argument("--created-key", default="createdAt")
@@ -479,6 +480,8 @@ def main() -> int:
         if convo and not args.skip_gemini:
             attempts = max(0, args.gemini_retries) + 1
             for attempt in range(1, attempts + 1):
+                if args.log_gemini:
+                    print(f"ticket {ticket_id}: gemini_start attempt={attempt}/{attempts}", file=sys.stderr)
                 try:
                     summary = call_gemini_summary(
                         args.gemini_api_key,
@@ -488,8 +491,10 @@ def main() -> int:
                         debug=args.debug_gemini,
                         ticket_id=ticket_id,
                     )
+                    if args.log_gemini:
+                        print(f"ticket {ticket_id}: gemini_done attempt={attempt}/{attempts} chars={len(summary)}", file=sys.stderr)
                 except Exception as exc:
-                    if args.debug_conversation:
+                    if args.debug_conversation or args.log_gemini:
                         print(f"ticket {ticket_id}: gemini_error attempt={attempt}/{attempts} err={exc}", file=sys.stderr)
                     summary = ""
 
@@ -497,10 +502,12 @@ def main() -> int:
                     break
 
                 if attempt < attempts:
+                    if args.log_gemini:
+                        print(f"ticket {ticket_id}: gemini_retry_wait seconds={max(0.0, args.gemini_retry_delay) * attempt}", file=sys.stderr)
                     time.sleep(max(0.0, args.gemini_retry_delay) * attempt)
 
         if convo and not summary:
-            if args.debug_conversation:
+            if args.debug_conversation or args.log_gemini:
                 print(f"ticket {ticket_id}: gemini_empty_fallback", file=sys.stderr)
             summary = convo[:args.summary_max_chars]
 

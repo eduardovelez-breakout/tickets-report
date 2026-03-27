@@ -30,7 +30,8 @@ jobs:
           ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           EOF
 
-      - name: Export weekly tickets CSV
+      - name: Export weekly tickets CSV (scheduled)
+        if: github.event_name != 'workflow_dispatch'
         env:
           HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -39,6 +40,18 @@ jobs:
             --token "$HUBSPOT_PAT" \
             --gemini-api-key "$GEMINI_API_KEY" \
             --workers 10
+
+      - name: Export weekly tickets CSV (manual with Gemini logs)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python export_weekly_tickets.py \
+            --token "$HUBSPOT_PAT" \
+            --gemini-api-key "$GEMINI_API_KEY" \
+            --workers 10 \
+            --log-gemini
 
       - name: Upload CSV to Google Sheets
         env:

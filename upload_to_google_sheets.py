@@ -6,10 +6,12 @@ from __future__ import annotations
 import argparse
 import csv
 import datetime as dt
+import sys
 from pathlib import Path
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
@@ -48,12 +50,28 @@ def unique_tab_title(rows: list[list[str]]) -> str:
     return f"{start} to {end}"[:100]
 
 
+def first_sheet_title(service, sheet_id: str) -> str:
+    meta = service.spreadsheets().get(
+        spreadsheetId=sheet_id,
+        fields="sheets(properties(title))",
+    ).execute()
+    sheets = meta.get("sheets", [])
+    if not sheets:
+        raise RuntimeError("Spreadsheet has no sheets")
+    props = sheets[0].get("properties", {})
+    title = props.get("title")
+    if not title:
+        raise RuntimeError("Could not determine first sheet title")
+    return str(title)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Upload CSV to new Google Sheets tab")
     parser.add_argument("--sheet-id", required=True)
     parser.add_argument("--csv-path", default="Tickets - Last 7 Days.csv")
     parser.add_argument("--credentials", default="google_service_account.json")
     parser.add_argument("--tab-prefix", default="")
+    parser.add_argument("--fallback-first-sheet", action="store_true", default=True)
     args = parser.parse_args()
 
     rows = read_csv_rows(Path(args.csv_path))
@@ -77,17 +95,29 @@ def main() -> int:
         ]
     }
 
-    service.spreadsheets().batchUpdate(spreadsheetId=args.sheet_id, body=add_sheet_req).execute()
+    target_title = title
+    try:
+        service.spreadsheets().batchUpdate(spreadsheetId=args.sheet_id, body=add_sheet_req).execute()
+    except HttpError as exc:
+        msg = str(exc)
+        unsupported = "This operation is not supported for this document" in msg
+        if not (args.fallback_first_sheet and unsupported):
+            raise
+        target_title = first_sheet_title(service, args.sheet_id)
+        print(
+            f"addSheet unsupported for this document; writing to existing tab: {target_title}",
+            file=sys.stderr,
+        )
 
     body = {"values": rows}
     service.spreadsheets().values().update(
         spreadsheetId=args.sheet_id,
-        range=f"'{title}'!A1",
+        range=f"'{target_title}'!A1",
         valueInputOption="USER_ENTERED",
         body=body,
     ).execute()
 
-    print(f"Uploaded {len(rows) - 1} rows to tab: {title}")
+    print(f"Uploaded {len(rows) - 1} rows to tab: {target_title}")
     return 0
 
 
