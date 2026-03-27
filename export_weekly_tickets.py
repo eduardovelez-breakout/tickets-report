@@ -15,8 +15,11 @@ import json
 import re
 import sys
 import time
+import threading
 import urllib.parse
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -36,6 +39,52 @@ CONVO_SOURCES: list[tuple[list[str], str, list[str]]] = [
     (["tasks", "task"], "tasks", ["hs_task_body", "hs_body_preview"]),
     (["communications", "communication"], "communications", ["hs_communication_body", "hs_body_preview"]),
 ]
+
+
+class FixedWindowRateLimiter:
+    def __init__(self, max_calls: int, window_seconds: float):
+        self.max_calls = max(1, int(max_calls))
+        self.window_seconds = float(window_seconds)
+        self._lock = threading.Lock()
+        self._timestamps = deque()
+
+    def acquire(self) -> None:
+        while True:
+            wait_for = 0.0
+            now = time.monotonic()
+            with self._lock:
+                while self._timestamps and (now - self._timestamps[0]) >= self.window_seconds:
+                    self._timestamps.popleft()
+                if len(self._timestamps) < self.max_calls:
+                    self._timestamps.append(now)
+                    return
+                wait_for = self.window_seconds - (now - self._timestamps[0])
+            time.sleep(max(0.01, wait_for))
+
+
+def is_rate_limit_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        if exc.code == 429:
+            return True
+        try:
+            body = exc.read().decode("utf-8", errors="ignore").lower()
+        except Exception:
+            body = ""
+        if "rate limit" in body or "resource_exhausted" in body or "quota" in body:
+            return True
+    msg = str(exc).lower()
+    return "rate limit" in msg or "resource_exhausted" in msg or "quota" in msg
+
+
+def retry_after_seconds(exc: Exception, default_seconds: float) -> float:
+    if isinstance(exc, urllib.error.HTTPError):
+        try:
+            value = exc.headers.get("Retry-After")
+            if value:
+                return max(0.5, float(value))
+        except Exception:
+            pass
+    return max(0.5, float(default_seconds))
 
 
 def isoformat_utc(d: dt.datetime) -> str:
@@ -429,6 +478,7 @@ def main() -> int:
     parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--gemini-retries", type=int, default=2)
     parser.add_argument("--gemini-retry-delay", type=float, default=1.0)
+    parser.add_argument("--gemini-max-per-minute", type=int, default=20)
     parser.add_argument("--test-20", action="store_true")
     parser.add_argument("--test-20-oldest", action="store_true")
     parser.add_argument("--debug-conversation", action="store_true")
@@ -455,6 +505,8 @@ def main() -> int:
     if not args.gemini_api_key:
         print("Missing Gemini API key", file=sys.stderr)
         return 1
+
+    gemini_limiter = FixedWindowRateLimiter(args.gemini_max_per_minute, 60.0)
 
     now = dt.datetime.now(dt.timezone.utc)
     start_iso = isoformat_utc(now - dt.timedelta(days=7))
@@ -483,6 +535,7 @@ def main() -> int:
                 if args.log_gemini:
                     print(f"ticket {ticket_id}: gemini_start attempt={attempt}/{attempts}", file=sys.stderr)
                 try:
+                    gemini_limiter.acquire()
                     summary = call_gemini_summary(
                         args.gemini_api_key,
                         args.gemini_model,
@@ -498,13 +551,21 @@ def main() -> int:
                         print(f"ticket {ticket_id}: gemini_error attempt={attempt}/{attempts} err={exc}", file=sys.stderr)
                     summary = ""
 
+                    if attempt < attempts and is_rate_limit_error(exc):
+                        wait_s = retry_after_seconds(exc, max(args.gemini_retry_delay * attempt, 1.0))
+                        if args.log_gemini:
+                            print(f"ticket {ticket_id}: gemini_rate_limit_backoff seconds={wait_s}", file=sys.stderr)
+                        time.sleep(wait_s)
+                        continue
+
                 if summary:
                     break
 
                 if attempt < attempts:
+                    wait_s = max(0.0, args.gemini_retry_delay) * attempt
                     if args.log_gemini:
-                        print(f"ticket {ticket_id}: gemini_retry_wait seconds={max(0.0, args.gemini_retry_delay) * attempt}", file=sys.stderr)
-                    time.sleep(max(0.0, args.gemini_retry_delay) * attempt)
+                        print(f"ticket {ticket_id}: gemini_retry_wait seconds={wait_s}", file=sys.stderr)
+                    time.sleep(wait_s)
 
         if convo and not summary:
             if args.debug_conversation or args.log_gemini:
