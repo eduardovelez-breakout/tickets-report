@@ -266,6 +266,19 @@ def build_ticket_url(ticket: dict[str, Any], ticket_url_key: str, ticket_id_key:
     return template.format(ticket_id=tid) if tid is not None else ""
 
 
+
+
+def strip_known_noise_phrases(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = re.sub(
+        r"messages from Slack, Google Chat, and Microsoft Teams are organized in this note",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return re.sub(r"\s+", " ", cleaned).strip()
+
 def clean_text(value: Any) -> str:
     text = str(value or "")
     if not text:
@@ -393,7 +406,7 @@ def fetch_ticket_conversation_text(token: str, ticket: dict[str, Any], ticket_id
             if not isinstance(props, dict):
                 continue
             for p in prop_names:
-                text = clean_text(props.get(p))
+                text = strip_known_noise_phrases(clean_text(props.get(p)))
                 if text:
                     chunks.append(text)
                     break
@@ -401,7 +414,7 @@ def fetch_ticket_conversation_text(token: str, ticket: dict[str, Any], ticket_id
     # Fallback so Summary is never blank when ticket has at least basic text.
     if not chunks:
         for p in ["properties.subject", "properties.content", "properties.description"]:
-            text = clean_text(get_nested(ticket, p))
+            text = strip_known_noise_phrases(clean_text(get_nested(ticket, p)))
             if text:
                 chunks.append(text)
 
