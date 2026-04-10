@@ -53,7 +53,7 @@ jobs:
             --workers 10 \
             --log-gemini \
             --log-gemini-payload-preview \
-            --log-gemini-payload-chars 400
+            --log-gemini-payload-chars 250
 
       - name: Upload CSV to Google Sheets
         env:
