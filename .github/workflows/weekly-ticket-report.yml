@@ -51,7 +51,9 @@ jobs:
             --token "$HUBSPOT_PAT" \
             --gemini-api-key "$GEMINI_API_KEY" \
             --workers 10 \
-            --log-gemini
+            --log-gemini \
+            --log-gemini-payload-preview \
+            --log-gemini-payload-chars 400
 
       - name: Upload CSV to Google Sheets
         env:
