@@ -484,6 +484,8 @@ def main() -> int:
     parser.add_argument("--debug-conversation", action="store_true")
     parser.add_argument("--debug-gemini", action="store_true")
     parser.add_argument("--log-gemini", action="store_true")
+    parser.add_argument("--log-gemini-payload-preview", action="store_true")
+    parser.add_argument("--log-gemini-payload-chars", type=int, default=500)
     parser.add_argument("--skip-gemini", action="store_true")
 
     parser.add_argument("--created-key", default="createdAt")
@@ -528,6 +530,10 @@ def main() -> int:
         created = parse_ts(str(get_nested(t, args.created_key) or ""))
         ticket_id = str(get_nested(t, args.ticket_id_key) or "")
         convo = fetch_ticket_conversation_text(token, t, ticket_id, args.conversation_max_chars, args.debug_conversation) if ticket_id else ""
+        if args.log_gemini_payload_preview and convo:
+            preview_len = max(50, int(args.log_gemini_payload_chars))
+            preview = re.sub(r"\s+", " ", convo[:preview_len]).strip()
+            print(f"ticket {ticket_id}: gemini_payload_preview chars={len(convo)} preview={preview}", file=sys.stderr)
         summary = ""
         if convo and not args.skip_gemini:
             attempts = max(0, args.gemini_retries) + 1
