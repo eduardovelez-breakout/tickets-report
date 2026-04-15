@@ -202,6 +202,16 @@ def fetch_get_json(url: str, token: str) -> dict[str, Any]:
         return json.loads(resp.read().decode("utf-8"))
 
 
+def delete_request(url: str, token: str) -> None:
+    req = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        method="DELETE",
+    )
+    with urllib.request.urlopen(req, timeout=60):
+        return
+
+
 def fetch_owner_map(owners_api_url: str, token: str, limit: int = 500) -> dict[str, str]:
     owner_map: dict[str, str] = {}
     cursor: str | None = None
@@ -320,6 +330,52 @@ def fetch_objects_batch(token: str, object_type: str, ids: list[str], properties
 
 
 
+def contact_is_internal(contact: dict[str, Any]) -> bool:
+    props = contact.get("properties", {}) if isinstance(contact, dict) else {}
+    if not isinstance(props, dict):
+        return False
+    raw_values = [str(props.get("email") or ""), str(props.get("hs_additional_emails") or "")]
+    emails: set[str] = set()
+    for raw in raw_values:
+        emails.update(split_emails(raw))
+        emails.update(extract_emails_from_text(raw))
+    if not emails:
+        return False
+    return all(is_excluded_email(e) for e in emails)
+
+
+def sever_internal_ticket_contact_associations(token: str, ticket_id: str, contact_ids: list[str]) -> list[str]:
+    if not contact_ids:
+        return []
+    try:
+        contacts = fetch_objects_batch(token, "contacts", contact_ids, ["email", "hs_additional_emails"])
+    except Exception:
+        return contact_ids
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for c in contacts:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id") or "").strip()
+        if cid:
+            by_id[cid] = c
+
+    kept: list[str] = []
+    for cid in contact_ids:
+        contact = by_id.get(cid)
+        if contact and contact_is_internal(contact):
+            try:
+                delete_request(
+                    f"https://api.hubapi.com/crm/v4/objects/tickets/{ticket_id}/associations/contacts/{cid}",
+                    token,
+                )
+            except Exception:
+                kept.append(cid)
+            continue
+        kept.append(cid)
+    return kept
+
+
 def fetch_ticket_company_name(token: str, ticket_id: str) -> str:
     company_ids: list[str] = []
     for assoc_type in ["companies", "company"]:
@@ -355,6 +411,9 @@ def fetch_ticket_contact_emails(token: str, ticket_id: str) -> str:
             contact_ids = []
         if contact_ids:
             break
+    if not contact_ids:
+        return ""
+    contact_ids = sever_internal_ticket_contact_associations(token, ticket_id, contact_ids)
     if not contact_ids:
         return ""
 
