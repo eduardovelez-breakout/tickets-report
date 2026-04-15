@@ -32,6 +32,8 @@ DEFAULT_PROPERTIES = "subject,time_to_first_agent_reply,time_to_close,hubspot_ow
 DEFAULT_GEMINI_API_KEY = ""
 DEFAULT_GEMINI_MODEL = "gemma-3-27b-it"
 
+BLOCKED_COMPANY_NAMES = {"breakout learning", "instructure"}
+
 CONVO_SOURCES: list[tuple[list[str], str, list[str]]] = [
     (["emails", "email"], "emails", ["hs_email_text", "hs_email_html", "hs_body_preview"]),
     (["notes", "note"], "notes", ["hs_note_body", "hs_body_preview"]),
@@ -106,6 +108,25 @@ def parse_ts(value: str | None) -> dt.datetime | None:
         return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(dt.timezone.utc)
     except ValueError:
         return None
+
+def parse_cli_datetime_utc(value: str | None) -> dt.datetime | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    # Accept YYYY-MM-DD as midnight UTC
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        raw = f"{raw}T00:00:00+00:00"
+    elif raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        d = dt.datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    return d.astimezone(dt.timezone.utc)
 
 
 def format_duration_from_ms(value: Any) -> str:
@@ -316,6 +337,28 @@ def fetch_association_ids(token: str, ticket_id: str, assoc_type: str, limit: in
     return ids
 
 
+def fetch_ticket_contact_ids(token: str, ticket_id: str) -> list[str]:
+    for assoc_type in ["contacts", "contact"]:
+        try:
+            ids = fetch_association_ids(token, ticket_id, assoc_type)
+        except Exception:
+            ids = []
+        if ids:
+            return ids
+    return []
+
+
+def fetch_ticket_company_ids(token: str, ticket_id: str) -> list[str]:
+    for assoc_type in ["companies", "company"]:
+        try:
+            ids = fetch_association_ids(token, ticket_id, assoc_type)
+        except Exception:
+            ids = []
+        if ids:
+            return ids
+    return []
+
+
 def fetch_objects_batch(token: str, object_type: str, ids: list[str], properties: list[str]) -> list[dict[str, Any]]:
     if not ids:
         return []
@@ -344,13 +387,13 @@ def contact_is_internal(contact: dict[str, Any]) -> bool:
     return all(is_excluded_email(e) for e in emails)
 
 
-def sever_internal_ticket_contact_associations(token: str, ticket_id: str, contact_ids: list[str]) -> list[str]:
+def sever_internal_ticket_contact_associations(token: str, ticket_id: str, contact_ids: list[str]) -> tuple[list[str], int]:
     if not contact_ids:
-        return []
+        return [], 0
     try:
         contacts = fetch_objects_batch(token, "contacts", contact_ids, ["email", "hs_additional_emails"])
     except Exception:
-        return contact_ids
+        return contact_ids, 0
 
     by_id: dict[str, dict[str, Any]] = {}
     for c in contacts:
@@ -361,6 +404,7 @@ def sever_internal_ticket_contact_associations(token: str, ticket_id: str, conta
             by_id[cid] = c
 
     kept: list[str] = []
+    removed_count = 0
     for cid in contact_ids:
         contact = by_id.get(cid)
         if contact and contact_is_internal(contact):
@@ -371,49 +415,83 @@ def sever_internal_ticket_contact_associations(token: str, ticket_id: str, conta
                 )
             except Exception:
                 kept.append(cid)
+            else:
+                removed_count += 1
             continue
         kept.append(cid)
-    return kept
+    return kept, removed_count
+
+
+def sever_internal_contacts_for_ticket(token: str, ticket_id: str) -> int:
+    contact_ids = fetch_ticket_contact_ids(token, ticket_id)
+    if not contact_ids:
+        return 0
+    _, removed = sever_internal_ticket_contact_associations(token, ticket_id, contact_ids)
+    return removed
+
+
+def company_name_is_blocked(name: str) -> bool:
+    return normalize_space(name).lower() in BLOCKED_COMPANY_NAMES
+
+
+def normalize_space(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def sever_blocked_company_associations_for_ticket(token: str, ticket_id: str) -> int:
+    company_ids = fetch_ticket_company_ids(token, ticket_id)
+    if not company_ids:
+        return 0
+
+    removed = 0
+    try:
+        companies = fetch_objects_batch(token, "companies", company_ids, ["name"])
+    except Exception:
+        return 0
+
+    for c in companies:
+        if not isinstance(c, dict):
+            continue
+        cid = str(c.get("id") or "").strip()
+        if not cid:
+            continue
+        props = c.get("properties", {})
+        if not isinstance(props, dict):
+            continue
+        name = normalize_space(str(props.get("name") or ""))
+        if company_name_is_blocked(name):
+            try:
+                delete_request(
+                    f"https://api.hubapi.com/crm/v4/objects/tickets/{ticket_id}/associations/companies/{cid}",
+                    token,
+                )
+            except Exception:
+                continue
+            removed += 1
+    return removed
 
 
 def fetch_ticket_company_name(token: str, ticket_id: str) -> str:
-    company_ids: list[str] = []
-    for assoc_type in ["companies", "company"]:
-        try:
-            company_ids = fetch_association_ids(token, ticket_id, assoc_type)
-        except Exception:
-            company_ids = []
-        if company_ids:
-            break
+    company_ids = fetch_ticket_company_ids(token, ticket_id)
     if not company_ids:
-        return ""
+        return "Unknown"
 
     try:
         companies = fetch_objects_batch(token, "companies", [company_ids[0]], ["name"])
         if companies and isinstance(companies[0], dict):
             props = companies[0].get("properties", {})
             if isinstance(props, dict):
-                name = str(props.get("name") or "").strip()
-                if name:
+                name = normalize_space(str(props.get("name") or ""))
+                if name and not company_name_is_blocked(name):
                     return name
     except Exception:
         pass
 
-    return f"ID {company_ids[0]}"
+    return "Unknown"
 
 
 def fetch_ticket_contact_emails(token: str, ticket_id: str) -> str:
-    contact_ids: list[str] = []
-    for assoc_type in ["contacts", "contact"]:
-        try:
-            contact_ids = fetch_association_ids(token, ticket_id, assoc_type)
-        except Exception:
-            contact_ids = []
-        if contact_ids:
-            break
-    if not contact_ids:
-        return ""
-    contact_ids = sever_internal_ticket_contact_associations(token, ticket_id, contact_ids)
+    contact_ids = fetch_ticket_contact_ids(token, ticket_id)
     if not contact_ids:
         return ""
 
@@ -545,6 +623,8 @@ def main() -> int:
     parser.add_argument("--cursor-key", default="paging.next.after")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--properties", default=DEFAULT_PROPERTIES)
+    parser.add_argument("--start-date", default="", help="UTC/ISO start (inclusive), e.g. 2026-04-04 or 2026-04-04T00:00:00Z")
+    parser.add_argument("--end-date", default="", help="UTC/ISO end (exclusive recommended), e.g. 2026-04-11 or 2026-04-11T00:00:00Z")
     parser.add_argument("--conversation-max-chars", type=int, default=8000)
     parser.add_argument("--summary-max-chars", type=int, default=900)
     parser.add_argument("--workers", type=int, default=10)
@@ -583,8 +663,16 @@ def main() -> int:
     gemini_limiter = FixedWindowRateLimiter(args.gemini_max_per_minute, 60.0)
 
     now = dt.datetime.now(dt.timezone.utc)
-    start_iso = isoformat_utc(now - dt.timedelta(days=7))
-    end_iso = isoformat_utc(now)
+    start_dt = parse_cli_datetime_utc(args.start_date) if args.start_date else (now - dt.timedelta(days=7))
+    end_dt = parse_cli_datetime_utc(args.end_date) if args.end_date else now
+    if not start_dt or not end_dt:
+        print("Invalid --start-date/--end-date. Use YYYY-MM-DD or ISO datetime.", file=sys.stderr)
+        return 1
+    if end_dt <= start_dt:
+        print("--end-date must be after --start-date", file=sys.stderr)
+        return 1
+    start_iso = isoformat_utc(start_dt)
+    end_iso = isoformat_utc(end_dt)
     properties = [p.strip() for p in args.properties.split(",") if p.strip()]
 
     try:
@@ -597,6 +685,25 @@ def main() -> int:
     except Exception as exc:
         print(f"Failed to fetch HubSpot data: {exc}", file=sys.stderr)
         return 1
+
+    removed_contact_total = 0
+    removed_company_total = 0
+    ticket_ids_for_sever = [str(get_nested(t, args.ticket_id_key) or "") for t in tickets]
+    for tid in ticket_ids_for_sever:
+        if not tid:
+            continue
+        try:
+            removed_contact_total += sever_internal_contacts_for_ticket(token, tid)
+            removed_company_total += sever_blocked_company_associations_for_ticket(token, tid)
+        except Exception:
+            continue
+
+    if removed_contact_total > 0 or removed_company_total > 0:
+        print(
+            f"Severed {removed_contact_total} internal contact and {removed_company_total} blocked company associations; waiting 60s for HubSpot association enrichment",
+            file=sys.stderr,
+        )
+        time.sleep(60)
 
     def process_ticket(t: dict[str, Any]) -> dict[str, str]:
         created = parse_ts(str(get_nested(t, args.created_key) or ""))
