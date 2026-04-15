@@ -71,6 +71,8 @@ def main() -> int:
     parser.add_argument("--csv-path", default="Tickets - Last 7 Days.csv")
     parser.add_argument("--credentials", default="google_service_account.json")
     parser.add_argument("--tab-prefix", default="")
+    parser.add_argument("--top-link", default="", help="URL to place in the top cell (A1)")
+    parser.add_argument("--top-link-label", default="Weekly Report", help="Display text for top-link")
     parser.add_argument("--fallback-first-sheet", action="store_true", default=True)
     args = parser.parse_args()
 
@@ -109,10 +111,23 @@ def main() -> int:
             file=sys.stderr,
         )
 
+    start_cell = "A1"
+    if args.top_link:
+        safe_url = str(args.top_link).replace('"', '""')
+        safe_label = str(args.top_link_label or "Weekly Report").replace('"', '""')
+        link_formula = f'=HYPERLINK("{safe_url}","{safe_label}")'
+        service.spreadsheets().values().update(
+            spreadsheetId=args.sheet_id,
+            range=f"'{target_title}'!A1",
+            valueInputOption="USER_ENTERED",
+            body={"values": [[link_formula]]},
+        ).execute()
+        start_cell = "A3"
+
     body = {"values": rows}
     service.spreadsheets().values().update(
         spreadsheetId=args.sheet_id,
-        range=f"'{target_title}'!A1",
+        range=f"'{target_title}'!{start_cell}",
         valueInputOption="USER_ENTERED",
         body=body,
     ).execute()
