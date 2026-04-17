@@ -55,12 +55,33 @@ jobs:
             --log-gemini-payload-preview \
             --log-gemini-payload-chars 250
 
+      - name: Generate weekly markdown report
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          python generate_high_level_report.py \
+            --api-key "$GEMINI_API_KEY" \
+            --gemini-max-per-minute 20
+
+      - name: Upload markdown report to Google Docs
+        id: upload_report_doc
+        run: |
+          DOC_URL=$(python upload_md_to_google_docs.py \
+            --file "report_artifacts/final_report.md" \
+            --credentials google_service_account.json \
+            --share-domain "breakoutlearning.com" \
+            --share-role "writer")
+          echo "doc_url=$DOC_URL" >> "$GITHUB_OUTPUT"
+
       - name: Upload CSV to Google Sheets
         env:
           GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          REPORT_DOC_URL: ${{ steps.upload_report_doc.outputs.doc_url }}
         run: |
           python upload_to_google_sheets.py \
             --sheet-id "$GOOGLE_SHEET_ID" \
             --csv-path "Tickets - Last 7 Days.csv" \
             --credentials google_service_account.json \
-            --tab-prefix "Weekly Tickets"
+            --tab-prefix "Weekly Tickets" \
+            --top-link "$REPORT_DOC_URL" \
+            --top-link-label "Weekly Ticket Report"

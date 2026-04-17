@@ -96,6 +96,22 @@ def normalize_text(v: str) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()
 
 
+
+
+def derive_date_range_label(rows: list[dict[str, str]]) -> str:
+    dates: list[str] = []
+    for r in rows:
+        created = normalize_text(r.get("Created", ""))
+        if not created:
+            continue
+        date_part = created.split("T", 1)[0]
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_part):
+            dates.append(date_part)
+    if not dates:
+        return ""
+    return f"{min(dates)} to {max(dates)}"
+
+
 def build_ticket_corpus(rows: list[dict[str, str]], max_rows: int) -> str:
     lines: list[str] = []
     for i, r in enumerate(rows[:max_rows], start=1):
@@ -372,32 +388,42 @@ def render_trend_text_sections(trends_json: dict[str, Any], rows: list[dict[str,
                 lines.append(f"- **{trend}**: {why}{cite}" if why else f"- **{trend}**{cite}")
     else:
         lines.append("- No clear trend output returned.")
-
-    lines.append("")
-    lines.append("## Institution Friction Patterns")
-    patterns = trends_json.get("institution_friction_patterns", []) if isinstance(trends_json, dict) else []
-    if isinstance(patterns, list) and patterns:
-        for p in patterns:
-            if not isinstance(p, dict):
-                continue
-            inst = str(p.get("institution", "")).strip() or "Unknown institution"
-            arr = p.get("patterns", [])
-            cite = format_citation_labels(p.get("evidence_ticket_indexes"), rows)
-            if isinstance(arr, list) and arr:
-                lines.append(f"- **{inst}**: " + ", ".join(str(x).strip() for x in arr if str(x).strip()) + cite)
-            else:
-                lines.append(f"- **{inst}**{cite}")
-    else:
-        lines.append("- No institution-specific patterns returned.")
-
-
     return lines
 
 
-def build_company_markdown_table(company_counts: list[dict[str, Any]], limit: int = 15) -> str:
-    lines = ["| Rank | Institution | Tickets | Share |", "|---:|---|---:|---:|"]
+def build_institution_trend_map(trends_json: dict[str, Any], rows: list[dict[str, str]]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    patterns = trends_json.get("institution_friction_patterns", []) if isinstance(trends_json, dict) else []
+    if not isinstance(patterns, list):
+        return out
+    for p in patterns:
+        if not isinstance(p, dict):
+            continue
+        inst = str(p.get("institution", "")).strip()
+        if not inst:
+            continue
+        arr = p.get("patterns", [])
+        patterns_text = ", ".join(str(x).strip() for x in arr if str(x).strip()) if isinstance(arr, list) else ""
+        cite = format_citation_labels(p.get("evidence_ticket_indexes"), rows)
+        out[inst.lower()] = (patterns_text + cite).strip() or ("No specific pattern provided" + cite)
+    return out
+
+
+def build_company_markdown_table(
+    company_counts: list[dict[str, Any]],
+    institution_trend_map: dict[str, str],
+    limit: int = 15,
+) -> str:
+    lines = [
+        "| Rank | Institution | Tickets | Share | Institutional Trends |",
+        "|---:|---|---:|---:|---|",
+    ]
     for i, row in enumerate(company_counts[:limit], start=1):
-        lines.append(f"| {i} | {row['company']} | {row['ticket_count']} | {row['share_pct']}% |")
+        company = str(row.get("company", ""))
+        trend_text = institution_trend_map.get(company.lower(), "")
+        lines.append(
+            f"| {i} | {company} | {row['ticket_count']} | {row['share_pct']}% | {trend_text} |"
+        )
     return "\n".join(lines)
 
 
@@ -451,6 +477,9 @@ Rules:
 - Focus only on trend surfacing, not recommendations or action plans.
 - Do not invent institutions; use provided data.
 - Keep outputs concise and factual.
+- Treat reported student issues as unverified symptoms, not confirmed bugs.
+- User error, misunderstanding, and configuration/workflow mismatch are common; prefer those interpretations unless clear evidence indicates a product defect.
+- Do not label something a bug/defect/outage unless evidence strongly supports it.
 - Trend names must be specific behavioral patterns with context (channel/workflow/platform), not broad buckets.
 - Bad trend labels (do not use): "Login Issues", "Technical Issues", "Group Problems", "Billing Questions".
 - Good trend label style: "Students authenticated through SSO instead of Canvas LTI and could not enter assigned breakout groups".
@@ -466,12 +495,21 @@ Ticket rows:
     trends_text = call_gemini(args.api_key, args.model, prompt_trends, gemini_limiter)
     trends_json = extract_json(trends_text)
     (outdir / "trend_insights.json").write_text(json.dumps(trends_json, indent=2), encoding="utf-8")
+    institution_trend_map = build_institution_trend_map(
+        trends_json if isinstance(trends_json, dict) else {},
+        rows,
+    )
+
+    date_range_label = derive_date_range_label(rows)
+    title = "# Weekly Ticket Trend Report"
+    if date_range_label:
+        title = f"# Weekly Ticket Trend Report ({date_range_label})"
 
     md_parts = [
-        "# Weekly Ticket Trend Report",
+        title,
         "",
         "## Top Institutions By Ticket Volume",
-        build_company_markdown_table(company_counts, limit=20),
+        build_company_markdown_table(company_counts, institution_trend_map, limit=20),
         "",
         "## Top Class Codes By Institution",
     ]
