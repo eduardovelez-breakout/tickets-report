@@ -73,8 +73,18 @@ jobs:
             --title-prefix "Weekly Ticket Report" \
             --folder-name "Weekly Ticket Reports" \
             --share-domain "breakoutlearning.com" \
-            --share-role "writer")
+            --share-role "writer" \
+            --allow-missing-doc-link \
+            --fallback-save-dir "report_artifacts/pending_drive_uploads")
           echo "doc_url=$DOC_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Upload fallback markdown artifact (if Drive failed)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pending-drive-upload
+          path: report_artifacts/pending_drive_uploads/*.md
+          if-no-files-found: ignore
 
       - name: Upload CSV to Google Sheets
         env:

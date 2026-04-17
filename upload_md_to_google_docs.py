@@ -6,10 +6,13 @@ from __future__ import annotations
 import argparse
 import csv
 import re
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaInMemoryUpload
 
 SCOPES = [
@@ -65,6 +68,25 @@ def get_or_create_folder_id(drive, folder_name: str) -> str:
     return folder_id
 
 
+def is_drive_link_optional_failure(exc: Exception) -> bool:
+    if not isinstance(exc, HttpError):
+        return False
+    msg = str(exc).lower()
+    return (
+        "drive api has not been used" in msg
+        or "accessnotconfigured" in msg
+        or "drive.googleapis.com" in msg
+        or "storagequotaexceeded" in msg
+        or "storage quota has been exceeded" in msg
+    )
+
+
+def sanitize_filename(value: str) -> str:
+    s = re.sub(r"[^\w\-. ]+", "", value).strip()
+    s = re.sub(r"\s+", "_", s)
+    return s or "weekly_ticket_report"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Upload markdown file to Google Docs")
     parser.add_argument("--file", default="report_artifacts/final_report.md")
@@ -76,6 +98,16 @@ def main() -> int:
     parser.add_argument("--share-anyone-read", action="store_true")
     parser.add_argument("--share-domain", default="", help="Google Workspace domain to share with (e.g. breakoutlearning.com)")
     parser.add_argument("--share-role", default="writer", choices=["reader", "commenter", "writer"], help="Role for --share-domain")
+    parser.add_argument(
+        "--allow-missing-doc-link",
+        action="store_true",
+        help="Return success with empty output when Doc link cannot be created (e.g., Drive API unavailable or quota exceeded)",
+    )
+    parser.add_argument(
+        "--fallback-save-dir",
+        default="report_artifacts/pending_drive_uploads",
+        help="Directory to save markdown copy when Drive upload fails and allow-missing-doc-link is enabled",
+    )
     args = parser.parse_args()
 
     md_path = Path(args.file)
@@ -90,35 +122,51 @@ def main() -> int:
 
     creds = service_account.Credentials.from_service_account_file(args.credentials, scopes=SCOPES)
     drive = build("drive", "v3", credentials=creds)
-    folder_id = get_or_create_folder_id(drive, args.folder_name.strip() or "Weekly Ticket Reports")
+    try:
+        folder_id = get_or_create_folder_id(drive, args.folder_name.strip() or "Weekly Ticket Reports")
 
-    media = MediaInMemoryUpload(content.encode("utf-8"), mimetype="text/markdown", resumable=False)
-    file_meta = {
-        "name": title,
-        "mimeType": "application/vnd.google-apps.document",
-        "parents": [folder_id],
-    }
+        media = MediaInMemoryUpload(content.encode("utf-8"), mimetype="text/markdown", resumable=False)
+        file_meta = {
+            "name": title,
+            "mimeType": "application/vnd.google-apps.document",
+            "parents": [folder_id],
+        }
 
-    created = drive.files().create(body=file_meta, media_body=media, fields="id,webViewLink").execute()
-    file_id = str(created.get("id") or "")
-    if not file_id:
-        raise RuntimeError("Google Docs create succeeded but no file id returned")
+        created = drive.files().create(body=file_meta, media_body=media, fields="id,webViewLink").execute()
+        file_id = str(created.get("id") or "")
+        if not file_id:
+            raise RuntimeError("Google Docs create succeeded but no file id returned")
 
-    if args.share_anyone_read:
-        drive.permissions().create(
-            fileId=file_id,
-            body={"type": "anyone", "role": "reader"},
-        ).execute()
+        if args.share_anyone_read:
+            drive.permissions().create(
+                fileId=file_id,
+                body={"type": "anyone", "role": "reader"},
+            ).execute()
 
-    if args.share_domain:
-        drive.permissions().create(
-            fileId=file_id,
-            body={"type": "domain", "role": args.share_role, "domain": args.share_domain},
-        ).execute()
+        if args.share_domain:
+            drive.permissions().create(
+                fileId=file_id,
+                body={"type": "domain", "role": args.share_role, "domain": args.share_domain},
+            ).execute()
 
-    url = str(created.get("webViewLink") or f"https://docs.google.com/document/d/{file_id}/edit")
-    print(url)
-    return 0
+        url = str(created.get("webViewLink") or f"https://docs.google.com/document/d/{file_id}/edit")
+        print(url)
+        return 0
+    except Exception as exc:
+        if args.allow_missing_doc_link and is_drive_link_optional_failure(exc):
+            fallback_dir = Path(args.fallback_save_dir)
+            fallback_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            fallback_name = f"{sanitize_filename(title)}_{ts}.md"
+            fallback_path = fallback_dir / fallback_name
+            fallback_path.write_text(content, encoding="utf-8")
+            print(
+                f"Drive doc upload unavailable; saved fallback markdown to {fallback_path}: {exc}",
+                file=sys.stderr,
+            )
+            print("")
+            return 0
+        raise
 
 
 if __name__ == "__main__":
