@@ -477,6 +477,8 @@ Rules:
 - Focus only on trend surfacing, not recommendations or action plans.
 - Do not invent institutions; use provided data.
 - Keep outputs concise and factual.
+- Determine core issue from support-rep diagnosis/resolution and final outcome signals, not from the user's initial claim alone.
+- If initial report conflicts with support findings, prefer support findings as source of truth.
 - Treat reported student issues as unverified symptoms, not confirmed bugs.
 - User error, misunderstanding, and configuration/workflow mismatch are common; prefer those interpretations unless clear evidence indicates a product defect.
 - Do not label something a bug/defect/outage unless evidence strongly supports it.

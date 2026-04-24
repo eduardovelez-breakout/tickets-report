@@ -27,7 +27,7 @@ DEFAULT_PAT = ""
 DEFAULT_API_URL = "https://api.hubapi.com/crm/v3/objects/tickets/search"
 DEFAULT_OWNERS_API_URL = "https://api.hubapi.com/crm/v3/owners/"
 DEFAULT_OUTPUT = "Tickets - Last 7 Days.csv"
-DEFAULT_PROPERTIES = "subject,time_to_first_agent_reply,time_to_close,hubspot_owner_id,content,description,category,support_subcategory,subcategory,hs_ticket_category,hs_ticket_subcategory"
+DEFAULT_PROPERTIES = "subject,time_to_first_agent_reply,time_to_close,hubspot_owner_id,content,description,category,support_subcategory,subcategory,hs_ticket_category,hs_ticket_subcategory,hs_ticket_status,hs_pipeline_stage"
 
 DEFAULT_GEMINI_API_KEY = ""
 DEFAULT_GEMINI_MODEL = "gemma-3-27b-it"
@@ -281,6 +281,12 @@ def fetch_tickets(api_url: str, token: str, start_iso: str, end_iso: str, limit:
             raise RuntimeError(f"Expected list at key '{results_key}', got: {type(items).__name__}")
         for item in items:
             created = parse_ts(str(get_nested(item, created_key) or ""))
+            status_value = first_non_empty_paths(
+                item,
+                "properties.hs_ticket_status,properties.ticket_status,properties.status,properties.hs_pipeline_stage",
+            ).strip().lower()
+            if "spam" in status_value:
+                continue
             if created and start_iso <= isoformat_utc(created) <= end_iso:
                 out.append(item)
         cursor = get_nested(payload, cursor_key)
@@ -568,9 +574,10 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
     prompt = (
         "You are writing internal support-ticket summaries.\n"
         "Output exactly 2 or 3 sentences total.\n"
-        "Sentence 1: customer issue/context.\n"
-        "Sentence 2: actions/troubleshooting performed.\n"
-        "Sentence 3 (optional): current status/outcome.\n"
+        "Sentence 1: inferred core issue/root cause, prioritizing support-rep diagnosis over the customer's initial report.\n"
+        "Sentence 2: actions/troubleshooting performed by support.\n"
+        "Sentence 3 (optional): final status/outcome or resolution.\n"
+        "If customer-reported issue conflicts with support findings, prefer support findings.\n"
         "Do not quote email text. Do not include greetings, signatures, or timestamps. "
         "Use plain factual language and keep it concise.\n\n"
         "Conversation:\n" + conversation_text
