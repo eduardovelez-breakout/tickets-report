@@ -51,7 +51,13 @@ def get_or_create_folder_id(drive, folder_name: str) -> str:
         f"name = '{safe_name}' and "
         "mimeType = 'application/vnd.google-apps.folder' and trashed = false"
     )
-    found = drive.files().list(q=query, fields="files(id,name)", pageSize=10).execute()
+    found = drive.files().list(
+        q=query,
+        fields="files(id,name)",
+        pageSize=10,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
     files = found.get("files", [])
     if files:
         return str(files[0].get("id"))
@@ -61,6 +67,7 @@ def get_or_create_folder_id(drive, folder_name: str) -> str:
             "mimeType": "application/vnd.google-apps.folder",
         },
         fields="id",
+        supportsAllDrives=True,
     ).execute()
     folder_id = str(created.get("id") or "")
     if not folder_id:
@@ -95,6 +102,7 @@ def main() -> int:
     parser.add_argument("--title", default="")
     parser.add_argument("--title-prefix", default="Weekly Ticket Report")
     parser.add_argument("--folder-name", default="Weekly Ticket Reports")
+    parser.add_argument("--folder-id", default="", help="Target Google Drive folder ID (preferred over --folder-name)")
     parser.add_argument("--share-anyone-read", action="store_true")
     parser.add_argument("--share-domain", default="", help="Google Workspace domain to share with (e.g. breakoutlearning.com)")
     parser.add_argument("--share-role", default="writer", choices=["reader", "commenter", "writer"], help="Role for --share-domain")
@@ -123,7 +131,7 @@ def main() -> int:
     creds = service_account.Credentials.from_service_account_file(args.credentials, scopes=SCOPES)
     drive = build("drive", "v3", credentials=creds)
     try:
-        folder_id = get_or_create_folder_id(drive, args.folder_name.strip() or "Weekly Ticket Reports")
+        folder_id = args.folder_id.strip() or get_or_create_folder_id(drive, args.folder_name.strip() or "Weekly Ticket Reports")
 
         media = MediaInMemoryUpload(content.encode("utf-8"), mimetype="text/markdown", resumable=False)
         file_meta = {
@@ -132,7 +140,12 @@ def main() -> int:
             "parents": [folder_id],
         }
 
-        created = drive.files().create(body=file_meta, media_body=media, fields="id,webViewLink").execute()
+        created = drive.files().create(
+            body=file_meta,
+            media_body=media,
+            fields="id,webViewLink",
+            supportsAllDrives=True,
+        ).execute()
         file_id = str(created.get("id") or "")
         if not file_id:
             raise RuntimeError("Google Docs create succeeded but no file id returned")

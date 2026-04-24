@@ -71,6 +71,7 @@ jobs:
             --csv-path "Tickets - Last 7 Days.csv" \
             --credentials google_service_account.json \
             --title-prefix "Weekly Ticket Report" \
+            --folder-id "16wZaESG4V0f2q7Vp9eLl8AXXIH26tDzh" \
             --folder-name "Weekly Ticket Reports" \
             --share-domain "breakoutlearning.com" \
             --share-role "writer" \
