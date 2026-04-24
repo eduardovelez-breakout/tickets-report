@@ -7,6 +7,7 @@ import argparse
 import csv
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -94,6 +95,30 @@ def sanitize_filename(value: str) -> str:
     return s or "weekly_ticket_report"
 
 
+def _permission_not_found(exc: Exception) -> bool:
+    if not isinstance(exc, HttpError):
+        return False
+    return "file not found" in str(exc).lower()
+
+
+def apply_permission_nonfatal(drive, file_id: str, body: dict[str, str]) -> None:
+    # Some Drive backends can briefly return 404 right after create; retry once.
+    for attempt in (1, 2):
+        try:
+            drive.permissions().create(
+                fileId=file_id,
+                body=body,
+                supportsAllDrives=True,
+            ).execute()
+            return
+        except Exception as exc:
+            if attempt == 1 and _permission_not_found(exc):
+                time.sleep(1.0)
+                continue
+            print(f"Permission grant skipped for {file_id}: {exc}", file=sys.stderr)
+            return
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Upload markdown file to Google Docs")
     parser.add_argument("--file", default="report_artifacts/final_report.md")
@@ -151,16 +176,18 @@ def main() -> int:
             raise RuntimeError("Google Docs create succeeded but no file id returned")
 
         if args.share_anyone_read:
-            drive.permissions().create(
-                fileId=file_id,
-                body={"type": "anyone", "role": "reader"},
-            ).execute()
+            apply_permission_nonfatal(
+                drive,
+                file_id,
+                {"type": "anyone", "role": "reader"},
+            )
 
         if args.share_domain:
-            drive.permissions().create(
-                fileId=file_id,
-                body={"type": "domain", "role": args.share_role, "domain": args.share_domain},
-            ).execute()
+            apply_permission_nonfatal(
+                drive,
+                file_id,
+                {"type": "domain", "role": args.share_role, "domain": args.share_domain},
+            )
 
         url = str(created.get("webViewLink") or f"https://docs.google.com/document/d/{file_id}/edit")
         print(url)
