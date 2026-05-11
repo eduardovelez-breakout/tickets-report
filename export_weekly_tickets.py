@@ -30,7 +30,7 @@ DEFAULT_OUTPUT = "Tickets - Last 7 Days.csv"
 DEFAULT_PROPERTIES = "subject,time_to_first_agent_reply,time_to_close,hubspot_owner_id,content,description,category,support_subcategory,subcategory,hs_ticket_category,hs_ticket_subcategory,hs_ticket_status,hs_pipeline_stage"
 
 DEFAULT_GEMINI_API_KEY = ""
-DEFAULT_GEMINI_MODEL = "gemma-4-31b-it"
+DEFAULT_GEMINI_MODEL = "gemma-4-26b-a4b-it"
 
 BLOCKED_COMPANY_NAMES = {"breakout learning", "instructure"}
 
@@ -87,6 +87,10 @@ def retry_after_seconds(exc: Exception, default_seconds: float) -> float:
         except Exception:
             pass
     return max(0.5, float(default_seconds))
+
+
+def is_server_error(exc: Exception) -> bool:
+    return isinstance(exc, urllib.error.HTTPError) and 500 <= exc.code <= 599
 
 
 def isoformat_utc(d: dt.datetime) -> str:
@@ -583,7 +587,7 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
     )
     body = json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}).encode("utf-8")
     model_candidates: list[str] = []
-    for m in [model, "gemma-4-26b-a4b-it"]:
+    for m in [model, "gemma-4-31b-it"]:
         mm = str(m or "").strip()
         if mm and mm not in model_candidates:
             model_candidates.append(mm)
@@ -592,22 +596,36 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
     last_exc: Exception | None = None
     for model_name in model_candidates:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{urllib.parse.quote(model_name)}:generateContent?key={urllib.parse.quote(api_key)}"
-        req = urllib.request.Request(
-            url,
-            data=body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=90) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+        per_model_attempts = 3
+        for attempt in range(1, per_model_attempts + 1):
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=90) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                break
+            except Exception as exc:
+                last_exc = exc
+                if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
+                    # model not available in this project/region; try fallback model
+                    break
+                if attempt < per_model_attempts and (is_rate_limit_error(exc) or is_server_error(exc)):
+                    wait_s = retry_after_seconds(exc, float(attempt))
+                    if debug:
+                        print(
+                            f"ticket {ticket_id}: gemini_model_retry model={model_name} attempt={attempt}/{per_model_attempts} wait={wait_s}",
+                            file=sys.stderr,
+                        )
+                    time.sleep(wait_s)
+                    continue
+                # non-retriable for this model, move to fallback model (if any)
+                break
+        if payload:
             break
-        except Exception as exc:
-            last_exc = exc
-            if isinstance(exc, urllib.error.HTTPError) and exc.code == 404:
-                # model not available in this project/region; try fallback model
-                continue
-            raise
 
     if not payload and last_exc:
         raise last_exc
