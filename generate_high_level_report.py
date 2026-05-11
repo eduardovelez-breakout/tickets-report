@@ -74,6 +74,10 @@ def _retry_after_seconds(exc: Exception, fallback_seconds: float) -> float:
     return max(0.5, float(fallback_seconds))
 
 
+def _is_model_not_found(exc: Exception) -> bool:
+    return isinstance(exc, urllib.error.HTTPError) and exc.code == 404
+
+
 def read_rows(csv_path: Path) -> list[dict[str, str]]:
     with csv_path.open("r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f, delimiter="~")
@@ -129,33 +133,50 @@ def build_ticket_corpus(rows: list[dict[str, str]], max_rows: int) -> str:
 
 
 def call_gemini(api_key: str, model: str, prompt: str, limiter: FixedWindowRateLimiter) -> str:
-    url = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        f"{urllib.parse.quote(model)}:generateContent?key={urllib.parse.quote(api_key)}"
-    )
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
 
+    model_candidates: list[str] = []
+    for m in [model, "gemma-3-12b-it", "gemini-1.5-flash"]:
+        mm = str(m or "").strip()
+        if mm and mm not in model_candidates:
+            model_candidates.append(mm)
+
+    last_exc: Exception | None = None
     payload: dict[str, Any] = {}
-    attempts = 4
-    for attempt in range(1, attempts + 1):
-        limiter.acquire()
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
+    for model_name in model_candidates:
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{urllib.parse.quote(model_name)}:generateContent?key={urllib.parse.quote(api_key)}"
         )
-        try:
-            with urllib.request.urlopen(req, timeout=120) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
+        attempts = 4
+        for attempt in range(1, attempts + 1):
+            limiter.acquire()
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                break
+            except Exception as exc:
+                last_exc = exc
+                if _is_model_not_found(exc):
+                    # Try the next fallback model immediately.
+                    break
+                if attempt >= attempts:
+                    raise
+                if _is_rate_limited(exc):
+                    time.sleep(_retry_after_seconds(exc, 3.0 * attempt))
+                else:
+                    time.sleep(1.0 * attempt)
+        if payload:
             break
-        except Exception as exc:
-            if attempt >= attempts:
-                raise
-            if _is_rate_limited(exc):
-                time.sleep(_retry_after_seconds(exc, 3.0 * attempt))
-            else:
-                time.sleep(1.0 * attempt)
+
+    if not payload and last_exc:
+        raise last_exc
 
     candidates = payload.get("candidates", [])
     if not candidates:

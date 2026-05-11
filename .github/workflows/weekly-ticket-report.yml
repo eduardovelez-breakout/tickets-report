@@ -5,6 +5,15 @@ on:
     # Fridays at 9:00 AM America/Chicago (14:00 UTC during CST; adjust if needed)
     - cron: '0 14 * * 5'
   workflow_dispatch:
+    inputs:
+      start_date:
+        description: "Optional start date (UTC), e.g. 2026-05-01 or 2026-05-01T00:00:00Z"
+        required: false
+        default: ""
+      end_date:
+        description: "Optional end date (UTC), e.g. 2026-05-08 or 2026-05-08T00:00:00Z"
+        required: false
+        default: ""
 
 jobs:
   export-and-upload:
@@ -46,14 +55,24 @@ jobs:
         env:
           HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          START_DATE: ${{ github.event.inputs.start_date }}
+          END_DATE: ${{ github.event.inputs.end_date }}
         run: |
+          DATE_ARGS=""
+          if [ -n "$START_DATE" ]; then
+            DATE_ARGS="$DATE_ARGS --start-date $START_DATE"
+          fi
+          if [ -n "$END_DATE" ]; then
+            DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+          fi
           python export_weekly_tickets.py \
             --token "$HUBSPOT_PAT" \
             --gemini-api-key "$GEMINI_API_KEY" \
             --workers 10 \
             --log-gemini \
             --log-gemini-payload-preview \
-            --log-gemini-payload-chars 250
+            --log-gemini-payload-chars 250 \
+            $DATE_ARGS
 
       - name: Generate weekly markdown report
         env:
