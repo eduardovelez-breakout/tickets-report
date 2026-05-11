@@ -30,7 +30,7 @@ DEFAULT_OUTPUT = "Tickets - Last 7 Days.csv"
 DEFAULT_PROPERTIES = "subject,time_to_first_agent_reply,time_to_close,hubspot_owner_id,content,description,category,support_subcategory,subcategory,hs_ticket_category,hs_ticket_subcategory,hs_ticket_status,hs_pipeline_stage"
 
 DEFAULT_GEMINI_API_KEY = ""
-DEFAULT_GEMINI_MODEL = "gemma-4-31b-it"
+DEFAULT_GEMINI_MODEL = "gemma-4-26b-a4b-it"
 
 BLOCKED_COMPANY_NAMES = {"breakout learning", "instructure"}
 
@@ -609,14 +609,11 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
         {
             "contents": [{"parts": [{"text": user_text}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
-            "generationConfig": {
-                "temperature": 0.2,
-                "thinkingConfig": {"thinkingLevel": "high"},
-            },
+            "generationConfig": {"temperature": 0.2},
         }
     ).encode("utf-8")
     model_candidates: list[str] = []
-    for m in [model, "gemma-3-12b-it"]:
+    for m in [model, "gemma-4-31b-it", "gemma-3-12b-it"]:
         mm = str(m or "").strip()
         if mm and mm not in model_candidates:
             model_candidates.append(mm)
