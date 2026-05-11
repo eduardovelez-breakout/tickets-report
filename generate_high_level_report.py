@@ -133,7 +133,21 @@ def build_ticket_corpus(rows: list[dict[str, str]], max_rows: int) -> str:
 
 
 def call_gemini(api_key: str, model: str, prompt: str, limiter: FixedWindowRateLimiter) -> str:
-    body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "systemInstruction": {
+            "parts": [
+                {
+                    "text": (
+                        "You are an internal support analytics assistant. "
+                        "Return only the requested format. "
+                        "Do not repeat instructions."
+                    )
+                }
+            ]
+        },
+        "generationConfig": {"temperature": 0.2},
+    }
 
     model_candidates: list[str] = []
     for m in [model, "gemma-4-31b-it"]:

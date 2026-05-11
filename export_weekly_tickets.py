@@ -320,6 +320,24 @@ def strip_known_noise_phrases(text: str) -> str:
     )
     return re.sub(r"\s+", " ", cleaned).strip()
 
+
+def looks_like_prompt_echo(text: str) -> bool:
+    t = re.sub(r"\s+", " ", str(text or "")).strip().lower()
+    if not t:
+        return False
+    bad_markers = [
+        "role: internal support-ticket summary writer",
+        "constraint 1",
+        "constraint 2",
+        "sentence 1:",
+        "sentence 2:",
+        "output exactly 2",
+        "hard limit",
+    ]
+    marker_hits = sum(1 for m in bad_markers if m in t)
+    return marker_hits >= 2
+
+
 def clean_text(value: Any) -> str:
     text = str(value or "")
     if not text:
@@ -574,7 +592,7 @@ def fetch_ticket_conversation_text(token: str, ticket: dict[str, Any], ticket_id
 def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_chars: int, debug: bool = False, ticket_id: str = "") -> str:
     if not conversation_text:
         return ""
-    prompt = (
+    system_instruction = (
         "You are writing internal support-ticket summaries.\n"
         "Output exactly 2 sentences total (3 only if absolutely needed).\n"
         "Hard limit: 320 characters total.\n"
@@ -584,10 +602,16 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
         "If customer-reported issue conflicts with support findings, prefer support findings.\n"
         "Do not use bullet points, labels, preamble, or extra detail.\n"
         "Do not quote email text. Do not include greetings, signatures, or timestamps. "
-        "Use plain factual language and keep it concise.\n\n"
-        "Conversation:\n" + conversation_text
+        "Use plain factual language and keep it concise."
     )
-    body = json.dumps({"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}).encode("utf-8")
+    user_text = "Conversation:\n" + conversation_text
+    body = json.dumps(
+        {
+            "contents": [{"parts": [{"text": user_text}]}],
+            "systemInstruction": {"parts": [{"text": system_instruction}]},
+            "generationConfig": {"temperature": 0.2},
+        }
+    ).encode("utf-8")
     model_candidates: list[str] = []
     for m in [model, "gemma-4-31b-it"]:
         mm = str(m or "").strip()
@@ -655,6 +679,10 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
     text = "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
     if debug and not text:
         print(f"ticket {ticket_id}: gemini_parts_but_empty_text", file=sys.stderr)
+    if looks_like_prompt_echo(text):
+        if debug:
+            print(f"ticket {ticket_id}: gemini_prompt_echo_rejected", file=sys.stderr)
+        return ""
     return text[:max_chars]
 
 
