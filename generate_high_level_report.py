@@ -146,7 +146,10 @@ def call_gemini(api_key: str, model: str, prompt: str, limiter: FixedWindowRateL
                 }
             ]
         },
-        "generationConfig": {"temperature": 0.2},
+        "generationConfig": {
+            "temperature": 0.2,
+            "thinkingConfig": {"thinkingLevel": "high"},
+        },
     }
 
     model_candidates: list[str] = []
@@ -200,7 +203,11 @@ def call_gemini(api_key: str, model: str, prompt: str, limiter: FixedWindowRateL
     parts = content.get("parts", []) if isinstance(content, dict) else []
     if not isinstance(parts, list):
         return ""
-    return "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
+    return "\n".join(
+        str(p.get("text", ""))
+        for p in parts
+        if isinstance(p, dict) and not bool(p.get("thought", False))
+    ).strip()
 
 
 def extract_json(text: str) -> Any:

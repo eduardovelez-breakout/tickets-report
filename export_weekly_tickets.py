@@ -609,7 +609,10 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
         {
             "contents": [{"parts": [{"text": user_text}]}],
             "systemInstruction": {"parts": [{"text": system_instruction}]},
-            "generationConfig": {"temperature": 0.2},
+            "generationConfig": {
+                "temperature": 0.2,
+                "thinkingConfig": {"thinkingLevel": "high"},
+            },
         }
     ).encode("utf-8")
     model_candidates: list[str] = []
@@ -676,7 +679,11 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
             print(f"ticket {ticket_id}: gemini_no_parts payload_keys={list(payload.keys())}", file=sys.stderr)
         return ""
 
-    text = "\n".join(str(p.get("text", "")) for p in parts if isinstance(p, dict)).strip()
+    text = "\n".join(
+        str(p.get("text", ""))
+        for p in parts
+        if isinstance(p, dict) and not bool(p.get("thought", False))
+    ).strip()
     if debug and not text:
         print(f"ticket {ticket_id}: gemini_parts_but_empty_text", file=sys.stderr)
     if looks_like_prompt_echo(text):
