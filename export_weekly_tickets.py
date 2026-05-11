@@ -576,11 +576,13 @@ def call_gemini_summary(api_key: str, model: str, conversation_text: str, max_ch
         return ""
     prompt = (
         "You are writing internal support-ticket summaries.\n"
-        "Output exactly 2 or 3 sentences total.\n"
+        "Output exactly 2 sentences total (3 only if absolutely needed).\n"
+        "Hard limit: 320 characters total.\n"
         "Sentence 1: inferred core issue/root cause, prioritizing support-rep diagnosis over the customer's initial report.\n"
         "Sentence 2: actions/troubleshooting performed by support.\n"
         "Sentence 3 (optional): final status/outcome or resolution.\n"
         "If customer-reported issue conflicts with support findings, prefer support findings.\n"
+        "Do not use bullet points, labels, preamble, or extra detail.\n"
         "Do not quote email text. Do not include greetings, signatures, or timestamps. "
         "Use plain factual language and keep it concise.\n\n"
         "Conversation:\n" + conversation_text
@@ -672,7 +674,7 @@ def main() -> int:
     parser.add_argument("--start-date", default="", help="UTC/ISO start (inclusive), e.g. 2026-04-04 or 2026-04-04T00:00:00Z")
     parser.add_argument("--end-date", default="", help="UTC/ISO end (exclusive recommended), e.g. 2026-04-11 or 2026-04-11T00:00:00Z")
     parser.add_argument("--conversation-max-chars", type=int, default=8000)
-    parser.add_argument("--summary-max-chars", type=int, default=900)
+    parser.add_argument("--summary-max-chars", type=int, default=320)
     parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--gemini-retries", type=int, default=2)
     parser.add_argument("--gemini-retry-delay", type=float, default=1.0)

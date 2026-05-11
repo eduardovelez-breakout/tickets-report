@@ -24,7 +24,7 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL = "gemma-3-27b-it"
+DEFAULT_MODEL = "gemma-4-26b-a4b-it"
 DEFAULT_CSV = "Tickets - Last 7 Days.csv"
 DEFAULT_OUTDIR = "report_artifacts"
 
@@ -136,7 +136,7 @@ def call_gemini(api_key: str, model: str, prompt: str, limiter: FixedWindowRateL
     body = {"contents": [{"parts": [{"text": prompt}]}], "generationConfig": {"temperature": 0.2}}
 
     model_candidates: list[str] = []
-    for m in [model, "gemma-3-12b-it", "gemini-1.5-flash"]:
+    for m in [model, "gemma-4-31b-it"]:
         mm = str(m or "").strip()
         if mm and mm not in model_candidates:
             model_candidates.append(mm)
@@ -167,7 +167,8 @@ def call_gemini(api_key: str, model: str, prompt: str, limiter: FixedWindowRateL
                     # Try the next fallback model immediately.
                     break
                 if attempt >= attempts:
-                    raise
+                    # Exhausted retries for this model; move to next fallback model.
+                    break
                 if _is_rate_limited(exc):
                     time.sleep(_retry_after_seconds(exc, 3.0 * attempt))
                 else:
@@ -498,6 +499,10 @@ Rules:
 - Focus only on trend surfacing, not recommendations or action plans.
 - Do not invent institutions; use provided data.
 - Keep outputs concise and factual.
+- Keep every `trend` to at most 16 words.
+- Keep every `why_it_matters` to at most 20 words.
+- Keep each institution pattern item to at most 10 words.
+- Prefer short, direct phrasing over full narrative.
 - Determine core issue from support-rep diagnosis/resolution and final outcome signals, not from the user's initial claim alone.
 - If initial report conflicts with support findings, prefer support findings as source of truth.
 - Treat reported student issues as unverified symptoms, not confirmed bugs.
