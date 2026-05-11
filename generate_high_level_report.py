@@ -24,7 +24,7 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MODEL = "gemma-3-27b-it"
+DEFAULT_MODEL = "gemma-4-31b-it"
 DEFAULT_CSV = "Tickets - Last 7 Days.csv"
 DEFAULT_OUTDIR = "report_artifacts"
 
