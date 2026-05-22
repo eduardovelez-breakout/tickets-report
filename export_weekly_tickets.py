@@ -12,6 +12,7 @@ import csv
 import datetime as dt
 import html
 import json
+import os
 import re
 import sys
 import time
@@ -27,7 +28,7 @@ DEFAULT_PAT = ""
 DEFAULT_API_URL = "https://api.hubapi.com/crm/v3/objects/tickets/search"
 DEFAULT_OWNERS_API_URL = "https://api.hubapi.com/crm/v3/owners/"
 DEFAULT_OUTPUT = "Tickets - Last 7 Days.csv"
-DEFAULT_PROPERTIES = "subject,time_to_first_agent_reply,time_to_close,hubspot_owner_id,content,description,category,support_subcategory,subcategory,hs_ticket_category,hs_ticket_subcategory,hs_ticket_status,hs_pipeline_stage"
+DEFAULT_PROPERTIES = "subject,time_to_first_agent_reply,time_to_close,hubspot_owner_id,content,description,category,support_subcategory,subcategory,hs_ticket_category,hs_ticket_subcategory,hs_ticket_status,hs_pipeline,hs_pipeline_stage"
 
 DEFAULT_GEMINI_API_KEY = ""
 DEFAULT_GEMINI_MODEL = "gemma-4-26b-a4b-it"
@@ -262,7 +263,18 @@ def fetch_owner_map(owners_api_url: str, token: str, limit: int = 500) -> dict[s
     return owner_map
 
 
-def fetch_tickets(api_url: str, token: str, start_iso: str, end_iso: str, limit: int, properties: list[str], results_key: str, cursor_key: str, created_key: str) -> list[dict[str, Any]]:
+def fetch_tickets(
+    api_url: str,
+    token: str,
+    start_iso: str,
+    end_iso: str,
+    limit: int,
+    properties: list[str],
+    results_key: str,
+    cursor_key: str,
+    created_key: str,
+    support_pipeline_id: str,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     cursor: str | None = None
     start_dt = parse_ts(start_iso)
@@ -272,7 +284,23 @@ def fetch_tickets(api_url: str, token: str, start_iso: str, end_iso: str, limit:
 
     while True:
         body: dict[str, Any] = {
-            "filterGroups": [{"filters": [{"propertyName": "createdate", "operator": "BETWEEN", "value": str(int(start_dt.timestamp() * 1000)), "highValue": str(int(end_dt.timestamp() * 1000))}]}],
+            "filterGroups": [
+                {
+                    "filters": [
+                        {
+                            "propertyName": "createdate",
+                            "operator": "BETWEEN",
+                            "value": str(int(start_dt.timestamp() * 1000)),
+                            "highValue": str(int(end_dt.timestamp() * 1000)),
+                        },
+                        {
+                            "propertyName": "hs_pipeline",
+                            "operator": "EQ",
+                            "value": str(support_pipeline_id),
+                        },
+                    ]
+                }
+            ],
             "sorts": [{"propertyName": "createdate", "direction": "DESCENDING"}],
             "properties": properties,
             "limit": limit,
@@ -287,7 +315,7 @@ def fetch_tickets(api_url: str, token: str, start_iso: str, end_iso: str, limit:
             created = parse_ts(str(get_nested(item, created_key) or ""))
             status_value = first_non_empty_paths(
                 item,
-                "properties.hs_ticket_status,properties.ticket_status,properties.status,properties.hs_pipeline_stage",
+                "properties.hs_ticket_status,properties.ticket_status,properties.status",
             ).strip().lower()
             if "spam" in status_value:
                 continue
@@ -696,6 +724,7 @@ def main() -> int:
     parser.add_argument("--owners-api-url", default=DEFAULT_OWNERS_API_URL)
     parser.add_argument("--token", help="HubSpot token (overrides DEFAULT_PAT)")
     parser.add_argument("--output", default=DEFAULT_OUTPUT)
+    parser.add_argument("--csv-delimiter", default="~", help="CSV delimiter for output (default: ~). Use ',' for standard CSV.")
     parser.add_argument("--gemini-api-key", default=DEFAULT_GEMINI_API_KEY)
     parser.add_argument("--gemini-model", default=DEFAULT_GEMINI_MODEL)
 
@@ -703,6 +732,7 @@ def main() -> int:
     parser.add_argument("--cursor-key", default="paging.next.after")
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--properties", default=DEFAULT_PROPERTIES)
+    parser.add_argument("--support-pipeline-id", default="0", help="HubSpot hs_pipeline id for Support pipeline")
     parser.add_argument("--start-date", default="", help="UTC/ISO start (inclusive), e.g. 2026-04-04 or 2026-04-04T00:00:00Z")
     parser.add_argument("--end-date", default="", help="UTC/ISO end (exclusive recommended), e.g. 2026-04-11 or 2026-04-11T00:00:00Z")
     parser.add_argument("--conversation-max-chars", type=int, default=8000)
@@ -719,6 +749,8 @@ def main() -> int:
     parser.add_argument("--log-gemini-payload-preview", action="store_true")
     parser.add_argument("--log-gemini-payload-chars", type=int, default=500)
     parser.add_argument("--skip-gemini", action="store_true")
+    parser.add_argument("--pending-retries-file", default="report_artifacts/pending_summary_retries.csv")
+    parser.add_argument("--retry-pending-only", action="store_true")
 
     parser.add_argument("--created-key", default="createdAt")
     parser.add_argument("--closed-key", default="properties.time_to_close")
@@ -756,7 +788,18 @@ def main() -> int:
     properties = [p.strip() for p in args.properties.split(",") if p.strip()]
 
     try:
-        tickets = fetch_tickets(args.api_url, token, start_iso, end_iso, args.limit, properties, args.results_key, args.cursor_key, args.created_key)
+        tickets = fetch_tickets(
+            args.api_url,
+            token,
+            start_iso,
+            end_iso,
+            args.limit,
+            properties,
+            args.results_key,
+            args.cursor_key,
+            args.created_key,
+            args.support_pipeline_id,
+        )
         if args.test_20_oldest:
             tickets = tickets[-20:]
         elif args.test_20:
@@ -765,6 +808,27 @@ def main() -> int:
     except Exception as exc:
         print(f"Failed to fetch HubSpot data: {exc}", file=sys.stderr)
         return 1
+
+    existing_pending_rows: list[dict[str, str]] = []
+    pending_by_id: dict[str, dict[str, str]] = {}
+    if os.path.exists(args.pending_retries_file):
+        try:
+            with open(args.pending_retries_file, "r", encoding="utf-8", newline="") as pf:
+                for row in csv.DictReader(pf):
+                    tid = str(row.get("ticket_id") or "").strip()
+                    if tid:
+                        existing_pending_rows.append(row)
+                        pending_by_id[tid] = row
+        except Exception:
+            existing_pending_rows = []
+            pending_by_id = {}
+
+    if args.retry_pending_only:
+        pending_ids = {str(r.get("ticket_id") or "").strip() for r in existing_pending_rows if str(r.get("ticket_id") or "").strip()}
+        tickets = [t for t in tickets if str(get_nested(t, args.ticket_id_key) or "").strip() in pending_ids]
+        if not tickets:
+            print(f"No pending tickets matched date range in {args.pending_retries_file}")
+            return 0
 
     removed_contact_total = 0
     removed_company_total = 0
@@ -785,7 +849,7 @@ def main() -> int:
         )
         time.sleep(60)
 
-    def process_ticket(t: dict[str, Any]) -> dict[str, str]:
+    def process_ticket(t: dict[str, Any]) -> tuple[dict[str, str], dict[str, str] | None]:
         created = parse_ts(str(get_nested(t, args.created_key) or ""))
         ticket_id = str(get_nested(t, args.ticket_id_key) or "")
         convo = fetch_ticket_conversation_text(token, t, ticket_id, args.conversation_max_chars, args.debug_conversation) if ticket_id else ""
@@ -794,6 +858,8 @@ def main() -> int:
             preview = re.sub(r"\s+", " ", convo[:preview_len]).strip()
             print(f"ticket {ticket_id}: gemini_payload_preview chars={len(convo)} preview={preview}", file=sys.stderr)
         summary = ""
+        gemini_failed = False
+        gemini_failure_reason = ""
         if convo and not args.skip_gemini:
             attempts = max(0, args.gemini_retries) + 1
             for attempt in range(1, attempts + 1):
@@ -815,6 +881,7 @@ def main() -> int:
                     if args.debug_conversation or args.log_gemini:
                         print(f"ticket {ticket_id}: gemini_error attempt={attempt}/{attempts} err={exc}", file=sys.stderr)
                     summary = ""
+                    gemini_failure_reason = str(exc)
 
                     if attempt < attempts and is_rate_limit_error(exc):
                         wait_s = retry_after_seconds(exc, max(args.gemini_retry_delay * attempt, 1.0))
@@ -835,6 +902,10 @@ def main() -> int:
         if convo and not summary:
             if args.debug_conversation or args.log_gemini:
                 print(f"ticket {ticket_id}: gemini_empty_fallback", file=sys.stderr)
+            if not args.skip_gemini:
+                gemini_failed = True
+                if not gemini_failure_reason:
+                    gemini_failure_reason = "empty_response"
             summary = convo[:args.summary_max_chars]
 
         summary = re.sub(r"\s+", " ", str(summary or "")).strip()
@@ -852,7 +923,7 @@ def main() -> int:
             emails = ",".join(sorted(email_set))
         category = first_non_empty_paths(t, args.category_key)
         subcategory = first_non_empty_paths(t, args.subcategory_key)
-        return {
+        row = {
             "Created": created.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "") if created else "",
             "Ticket Name": csv_hyperlink_formula(ticket_url, ticket_name),
             "Owner": owner_map.get(owner_id, owner_id),
@@ -864,25 +935,82 @@ def main() -> int:
             "Closed": format_duration_from_ms(get_nested(t, args.closed_key)),
             "First Reply After": format_duration_from_ms(get_nested(t, args.first_reply_key)),
         }
+        pending_row: dict[str, str] | None = None
+        if gemini_failed and ticket_id:
+            pending_row = {
+                "ticket_id": ticket_id,
+                "ticket_url": ticket_url,
+                "created": row["Created"],
+                "owner": row["Owner"],
+                "company": row["Company"],
+                "category": row["Category"],
+                "subcategory": row["Subcategory"],
+                "failure_reason": gemini_failure_reason[:400],
+                "conversation_excerpt": re.sub(r"\s+", " ", convo[:2000]).strip(),
+            }
+        return row, pending_row
 
     rows: list[dict[str, str]] = []
+    pending_failures_by_id: dict[str, dict[str, str]] = {}
+    attempted_ticket_ids: set[str] = set()
     worker_count = max(1, args.workers)
     with ThreadPoolExecutor(max_workers=worker_count) as ex:
         futures = [ex.submit(process_ticket, t) for t in tickets]
+        future_to_ticket_id = {fut: str(get_nested(t, args.ticket_id_key) or "").strip() for fut, t in zip(futures, tickets)}
         for fut in as_completed(futures):
+            tid = future_to_ticket_id.get(fut, "")
+            if tid:
+                attempted_ticket_ids.add(tid)
             try:
-                rows.append(fut.result())
+                row, pending_row = fut.result()
+                rows.append(row)
+                if pending_row and pending_row.get("ticket_id"):
+                    pending_failures_by_id[pending_row["ticket_id"]] = pending_row
             except Exception as exc:
                 if args.debug_conversation:
                     print(f"ticket_worker_error={exc}", file=sys.stderr)
 
     rows.sort(key=lambda r: r["Created"], reverse=True)
+    delim = str(args.csv_delimiter or "~")
+    if delim == "\\t":
+        delim = "\t"
     with open(args.output, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=["Created", "Ticket Name", "Owner", "Company", "Emails", "Category", "Subcategory", "Summary", "Closed", "First Reply After"], delimiter="~", lineterminator="\n")
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["Created", "Ticket Name", "Owner", "Company", "Emails", "Category", "Subcategory", "Summary", "Closed", "First Reply After"],
+            delimiter=delim,
+            lineterminator="\n",
+        )
         writer.writeheader()
         writer.writerows(rows)
 
+    final_pending_by_id: dict[str, dict[str, str]] = {}
+    for tid, row in pending_by_id.items():
+        if tid not in attempted_ticket_ids:
+            final_pending_by_id[tid] = row
+    final_pending_by_id.update(pending_failures_by_id)
+
+    pending_fields = [
+        "ticket_id",
+        "ticket_url",
+        "created",
+        "owner",
+        "company",
+        "category",
+        "subcategory",
+        "failure_reason",
+        "conversation_excerpt",
+    ]
+    os.makedirs(os.path.dirname(args.pending_retries_file) or ".", exist_ok=True)
+    with open(args.pending_retries_file, "w", newline="", encoding="utf-8") as pf:
+        pw = csv.DictWriter(pf, fieldnames=pending_fields)
+        pw.writeheader()
+        for tid in sorted(final_pending_by_id.keys()):
+            src = final_pending_by_id[tid]
+            pw.writerow({k: str(src.get(k) or "") for k in pending_fields})
+
     print(f"Wrote {len(rows)} tickets to {args.output}")
+    print(f"Pending summary retries: {len(final_pending_by_id)} -> {args.pending_retries_file}")
     return 0
 
 

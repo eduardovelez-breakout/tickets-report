@@ -78,15 +78,15 @@ def _is_model_not_found(exc: Exception) -> bool:
     return isinstance(exc, urllib.error.HTTPError) and exc.code == 404
 
 
-def read_rows(csv_path: Path) -> list[dict[str, str]]:
+def read_rows(csv_path: Path, delimiter: str) -> list[dict[str, str]]:
     with csv_path.open("r", encoding="utf-8", newline="") as f:
-        reader = csv.DictReader(f, delimiter="~")
+        reader = csv.DictReader(f, delimiter=delimiter)
         return [dict(r) for r in reader]
 
 
-def write_rows(csv_path: Path, rows: list[dict[str, str]]) -> None:
+def write_rows(csv_path: Path, rows: list[dict[str, str]], delimiter: str) -> None:
     with csv_path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), delimiter="~")
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()), delimiter=delimiter)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -467,6 +467,48 @@ def build_company_markdown_table(
     return "\n".join(lines)
 
 
+def build_fallback_trends_json(rows: list[dict[str, str]]) -> dict[str, Any]:
+    """Deterministic fallback when Gemini is unavailable."""
+    category_counts = Counter(normalize_text(r.get("Category", "")) or "Other" for r in rows)
+    subcategory_counts = Counter(normalize_text(r.get("Subcategory", "")) or "Other" for r in rows)
+
+    key_trends: list[dict[str, Any]] = []
+    for category, count in category_counts.most_common(5):
+        if category.lower() == "unknown":
+            continue
+        top_sub = ""
+        top_sub_count = 0
+        for sub, sub_count in subcategory_counts.items():
+            if sub_count > top_sub_count:
+                top_sub = sub
+                top_sub_count = sub_count
+        trend_label = f"Several tickets cluster around {category.lower()} workflows"
+        why = f"{count} tickets mention this area in the current reporting period."
+        if top_sub and top_sub.lower() != "other":
+            why = f"{count} tickets, often tied to {top_sub.lower()}."
+        key_trends.append(
+            {
+                "trend": trend_label[:120],
+                "why_it_matters": why[:140],
+                "evidence_ticket_indexes": [],
+            }
+        )
+
+    return {
+        "key_trends": key_trends or [
+            {
+                "trend": "No model-generated trend output available",
+                "why_it_matters": "Gemini call failed; report generated from deterministic counts only.",
+                "evidence_ticket_indexes": [],
+            }
+        ],
+        "institution_friction_patterns": [],
+        "data_quality_caveats": [
+            "Gemini trend generation unavailable in this run; fallback trends are deterministic."
+        ],
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate weekly trend report with deterministic institution counts")
     parser.add_argument("--csv", default=DEFAULT_CSV)
@@ -475,12 +517,17 @@ def main() -> int:
     parser.add_argument("--max-rows", type=int, default=150)
     parser.add_argument("--outdir", default=DEFAULT_OUTDIR)
     parser.add_argument("--gemini-max-per-minute", type=int, default=20)
+    parser.add_argument("--csv-delimiter", default="~", help="Input/output CSV delimiter (default: ~). Use ',' for standard CSV.")
     args = parser.parse_args()
 
     if not args.api_key:
         raise SystemExit("Missing Gemini API key. Pass --api-key or set GEMINI_API_KEY")
 
-    rows = read_rows(Path(args.csv))
+    delim = str(args.csv_delimiter or "~")
+    if delim == "\\t":
+        delim = "\t"
+
+    rows = read_rows(Path(args.csv), delimiter=delim)
     if not rows:
         raise SystemExit("CSV has no rows")
 
@@ -488,10 +535,13 @@ def main() -> int:
     outdir.mkdir(parents=True, exist_ok=True)
 
     gemini_limiter = FixedWindowRateLimiter(args.gemini_max_per_minute, 60.0)
-    rows = infer_missing_categories(rows, args.api_key, args.model, gemini_limiter)
+    try:
+        rows = infer_missing_categories(rows, args.api_key, args.model, gemini_limiter)
+    except Exception as exc:
+        print(f"Warning: category backfill skipped due to Gemini error: {exc}")
 
     enriched_csv = outdir / "enriched_tickets.csv"
-    write_rows(enriched_csv, rows)
+    write_rows(enriched_csv, rows, delimiter=delim)
 
     company_counts, unknown_company_count = compute_company_counts(rows)
     class_code_company_counts = compute_class_code_company_counts(rows, limit=30)
@@ -538,8 +588,12 @@ Ticket rows:
 {corpus}
 """.strip()
 
-    trends_text = call_gemini(args.api_key, args.model, prompt_trends, gemini_limiter)
-    trends_json = extract_json(trends_text)
+    try:
+        trends_text = call_gemini(args.api_key, args.model, prompt_trends, gemini_limiter)
+        trends_json = extract_json(trends_text)
+    except Exception as exc:
+        print(f"Warning: trend generation failed; using deterministic fallback: {exc}")
+        trends_json = build_fallback_trends_json(rows)
     (outdir / "trend_insights.json").write_text(json.dumps(trends_json, indent=2), encoding="utf-8")
     institution_trend_map = build_institution_trend_map(
         trends_json if isinstance(trends_json, dict) else {},

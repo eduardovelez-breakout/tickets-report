@@ -74,6 +74,47 @@ jobs:
             --log-gemini-payload-chars 250 \
             $DATE_ARGS
 
+      - name: Retry pending Gemini summaries (delayed)
+        env:
+          HUBSPOT_PAT: ${{ secrets.HUBSPOT_PAT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          START_DATE: ${{ github.event.inputs.start_date }}
+          END_DATE: ${{ github.event.inputs.end_date }}
+        run: |
+          PENDING_FILE="report_artifacts/pending_summary_retries.csv"
+          if [ ! -f "$PENDING_FILE" ]; then
+            echo "No pending retry file found; skipping retry pass."
+            exit 0
+          fi
+
+          # Header-only file means no pending rows.
+          PENDING_LINES=$(wc -l < "$PENDING_FILE")
+          if [ "$PENDING_LINES" -le 1 ]; then
+            echo "No pending summary retries; skipping retry pass."
+            exit 0
+          fi
+
+          echo "Pending retries detected ($((PENDING_LINES-1)) rows). Waiting 600s before retry pass."
+          sleep 600
+
+          DATE_ARGS=""
+          if [ -n "$START_DATE" ]; then
+            DATE_ARGS="$DATE_ARGS --start-date $START_DATE"
+          fi
+          if [ -n "$END_DATE" ]; then
+            DATE_ARGS="$DATE_ARGS --end-date $END_DATE"
+          fi
+
+          python export_weekly_tickets.py \
+            --token "$HUBSPOT_PAT" \
+            --gemini-api-key "$GEMINI_API_KEY" \
+            --workers 10 \
+            --retry-pending-only \
+            --log-gemini \
+            --log-gemini-payload-preview \
+            --log-gemini-payload-chars 250 \
+            $DATE_ARGS
+
       - name: Generate weekly markdown report
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
