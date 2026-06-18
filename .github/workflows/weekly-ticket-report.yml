@@ -108,6 +108,7 @@ jobs:
           python export_weekly_tickets.py \
             --token "$HUBSPOT_PAT" \
             --gemini-api-key "$GEMINI_API_KEY" \
+            --output "Pending Summary Retries.csv" \
             --workers 10 \
             --retry-pending-only \
             --log-gemini \
