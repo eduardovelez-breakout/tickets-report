@@ -2,7 +2,7 @@
 """Export last week's HubSpot tickets to CSV.
 
 Columns:
-Created~Ticket Name~Owner~Company~Company Owner~Emails~Category~Subcategory~Summary~Closed~First Reply After
+Created~Ticket Name~Owner~Company~Account Manager~Emails~Category~Subcategory~Summary~Closed~First Reply After
 """
 
 from __future__ import annotations
@@ -427,6 +427,38 @@ def fetch_objects_batch(token: str, object_type: str, ids: list[str], properties
     return res if isinstance(res, list) else []
 
 
+def resolve_company_account_manager_property(token: str, explicit_property: str = "") -> str:
+    if explicit_property.strip():
+        return explicit_property.strip()
+    try:
+        payload = fetch_get_json("https://api.hubapi.com/crm/v3/properties/companies", token)
+    except Exception:
+        return "hubspot_owner_id"
+
+    candidates: list[tuple[int, str]] = []
+    for item in payload.get("results", []):
+        if not isinstance(item, dict):
+            continue
+        name = normalize_space(str(item.get("name") or ""))
+        label = normalize_space(str(item.get("label") or ""))
+        haystack = f"{name} {label}".lower()
+        if not name or "account" not in haystack or "manager" not in haystack:
+            continue
+        score = 0
+        if label.lower() == "account manager":
+            score += 100
+        if name.lower() == "account_manager":
+            score += 80
+        if item.get("type") in {"enumeration", "string"}:
+            score += 5
+        candidates.append((score, name))
+
+    if not candidates:
+        return "hubspot_owner_id"
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
 
 
 def contact_is_internal(contact: dict[str, Any]) -> bool:
@@ -546,22 +578,28 @@ def fetch_ticket_company_name(token: str, ticket_id: str) -> str:
     return "Unknown"
 
 
-def fetch_ticket_company_info(token: str, ticket_id: str, owner_map: dict[str, str]) -> tuple[str, str]:
+def fetch_ticket_company_info(token: str, ticket_id: str, owner_map: dict[str, str], account_manager_property: str) -> tuple[str, str]:
     company_ids = fetch_ticket_company_ids(token, ticket_id)
     if not company_ids:
         return "Unknown", "Unknown"
 
     try:
-        companies = fetch_objects_batch(token, "companies", [company_ids[0]], ["name", "hubspot_owner_id"])
+        company_properties = ["name", "hubspot_owner_id"]
+        if account_manager_property and account_manager_property not in company_properties:
+            company_properties.append(account_manager_property)
+        companies = fetch_objects_batch(token, "companies", [company_ids[0]], company_properties)
         if companies and isinstance(companies[0], dict):
             props = companies[0].get("properties", {})
             if isinstance(props, dict):
                 name = normalize_space(str(props.get("name") or ""))
                 if not name or company_name_is_blocked(name):
                     name = "Unknown"
-                owner_id = str(props.get("hubspot_owner_id") or "").strip()
-                owner = owner_map.get(owner_id, owner_id) if owner_id else "Unknown"
-                return name, owner or "Unknown"
+                account_manager_id = str(props.get(account_manager_property) or "").strip()
+                account_manager = owner_map.get(account_manager_id, account_manager_id) if account_manager_id else ""
+                if not account_manager:
+                    owner_id = str(props.get("hubspot_owner_id") or "").strip()
+                    account_manager = owner_map.get(owner_id, owner_id) if owner_id else "Unknown"
+                return name, account_manager or "Unknown"
     except Exception:
         pass
 
@@ -755,6 +793,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--properties", default=DEFAULT_PROPERTIES)
     parser.add_argument("--support-pipeline-id", default="0", help="HubSpot hs_pipeline id for Support pipeline")
+    parser.add_argument("--company-account-manager-property", default="", help="HubSpot company property to use for account manager grouping. Auto-detects by label if omitted.")
     parser.add_argument("--start-date", default="", help="UTC/ISO start (inclusive), e.g. 2026-04-04 or 2026-04-04T00:00:00Z")
     parser.add_argument("--end-date", default="", help="UTC/ISO end (exclusive recommended), e.g. 2026-04-11 or 2026-04-11T00:00:00Z")
     parser.add_argument("--conversation-max-chars", type=int, default=8000)
@@ -827,6 +866,8 @@ def main() -> int:
         elif args.test_20:
             tickets = tickets[:20]
         owner_map = fetch_owner_map(args.owners_api_url, token)
+        company_account_manager_property = resolve_company_account_manager_property(token, args.company_account_manager_property)
+        print(f"Using company account manager property: {company_account_manager_property}", file=sys.stderr)
     except Exception as exc:
         print(f"Failed to fetch HubSpot data: {exc}", file=sys.stderr)
         return 1
@@ -937,7 +978,7 @@ def main() -> int:
         owner_id = str(get_nested(t, args.owner_key) or "")
         ticket_url = build_ticket_url(t, args.ticket_url_key, args.ticket_id_key, args.ticket_url_template)
         ticket_name = first_non_empty_paths(t, args.ticket_name_key) or ticket_url
-        company_name, company_owner = fetch_ticket_company_info(token, ticket_id, owner_map) if ticket_id else ("", "")
+        company_name, account_manager = fetch_ticket_company_info(token, ticket_id, owner_map, company_account_manager_property) if ticket_id else ("", "")
         emails = fetch_ticket_contact_emails(token, ticket_id) if ticket_id else ""
         if not emails:
             email_set = set(extract_emails_from_text(convo))
@@ -950,7 +991,7 @@ def main() -> int:
             "Ticket Name": csv_hyperlink_formula(ticket_url, ticket_name),
             "Owner": owner_map.get(owner_id, owner_id),
             "Company": company_name,
-            "Company Owner": company_owner,
+            "Account Manager": account_manager,
             "Emails": emails,
             "Category": category,
             "Subcategory": subcategory,
@@ -966,7 +1007,7 @@ def main() -> int:
                 "created": row["Created"],
                 "owner": row["Owner"],
                 "company": row["Company"],
-                "company_owner": row["Company Owner"],
+                "account_manager": row["Account Manager"],
                 "category": row["Category"],
                 "subcategory": row["Subcategory"],
                 "failure_reason": gemini_failure_reason[:400],
@@ -1001,7 +1042,7 @@ def main() -> int:
     with open(args.output, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["Created", "Ticket Name", "Owner", "Company", "Company Owner", "Emails", "Category", "Subcategory", "Summary", "Closed", "First Reply After"],
+            fieldnames=["Created", "Ticket Name", "Owner", "Company", "Account Manager", "Emails", "Category", "Subcategory", "Summary", "Closed", "First Reply After"],
             delimiter=delim,
             lineterminator="\n",
         )
@@ -1020,7 +1061,7 @@ def main() -> int:
         "created",
         "owner",
         "company",
-        "company_owner",
+        "account_manager",
         "category",
         "subcategory",
         "failure_reason",

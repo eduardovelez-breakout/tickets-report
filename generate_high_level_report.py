@@ -297,22 +297,27 @@ Tickets needing backfill:
 
 def compute_company_counts(rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]], int]:
     counts = Counter(normalize_text(r.get("Company", "")) or "Unknown" for r in rows)
-    company_owner_counts: dict[str, Counter[str]] = {}
+    account_manager_counts: dict[str, Counter[str]] = {}
     for r in rows:
         company = normalize_text(r.get("Company", "")) or "Unknown"
-        company_owner = normalize_text(r.get("Company Owner", "")) or normalize_text(r.get("Owner", "")) or "Unknown"
-        company_owner_counts.setdefault(company, Counter())[company_owner] += 1
+        account_manager = (
+            normalize_text(r.get("Account Manager", ""))
+            or normalize_text(r.get("Company Owner", ""))
+            or normalize_text(r.get("Owner", ""))
+            or "Unknown"
+        )
+        account_manager_counts.setdefault(company, Counter())[account_manager] += 1
     unknown_count = counts.get("Unknown", 0)
     ranked_counts = Counter({k: v for k, v in counts.items() if k != "Unknown"})
     total_ranked = sum(ranked_counts.values())
     out = []
     for company, cnt in ranked_counts.most_common():
-        company_owner = "Unknown"
-        if company in company_owner_counts and company_owner_counts[company]:
-            company_owner = company_owner_counts[company].most_common(1)[0][0]
+        account_manager = "Unknown"
+        if company in account_manager_counts and account_manager_counts[company]:
+            account_manager = account_manager_counts[company].most_common(1)[0][0]
         out.append({
             "company": company,
-            "company_owner": company_owner,
+            "account_manager": account_manager,
             "ticket_count": cnt,
             "share_pct": round((cnt / total_ranked) * 100, 1) if total_ranked else 0.0,
         })
@@ -462,25 +467,25 @@ def build_institution_trend_map(trends_json: dict[str, Any], rows: list[dict[str
     return out
 
 
-def build_company_markdown_tables_by_owner(
+def build_company_markdown_tables_by_account_manager(
     company_counts: list[dict[str, Any]],
     institution_trend_map: dict[str, str],
     limit: int = 15,
 ) -> str:
-    owners: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    account_managers: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for i, row in enumerate(company_counts[:limit], start=1):
-        owner = str(row.get("company_owner") or "Unknown").strip() or "Unknown"
-        owners.setdefault(owner, []).append((i, row))
+        account_manager = str(row.get("account_manager") or "Unknown").strip() or "Unknown"
+        account_managers.setdefault(account_manager, []).append((i, row))
 
     lines: list[str] = []
-    for owner in sorted(owners.keys()):
+    for account_manager in sorted(account_managers.keys()):
         lines.extend([
-            f"### {owner}",
+            f"### {account_manager}",
             "",
             "| Rank | Institution | Tickets | Share | Institutional Trends |",
             "|---:|---|---:|---:|---|",
         ])
-        for rank, row in owners[owner]:
+        for rank, row in account_managers[account_manager]:
             company = str(row.get("company", ""))
             trend_text = institution_trend_map.get(company.lower(), "")
             lines.append(
@@ -634,7 +639,7 @@ Ticket rows:
     md_parts.extend([
         "",
         "## Top Institutions By Ticket Volume",
-        build_company_markdown_tables_by_owner(company_counts, institution_trend_map, limit=20),
+        build_company_markdown_tables_by_account_manager(company_counts, institution_trend_map, limit=20),
         "",
     ])
     (outdir / "final_report.md").write_text("\n".join(md_parts), encoding="utf-8")
