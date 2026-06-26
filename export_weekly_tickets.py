@@ -2,7 +2,7 @@
 """Export last week's HubSpot tickets to CSV.
 
 Columns:
-Created~Ticket Name~Owner~Company~Emails~Category~Subcategory~Summary~Closed~First Reply After
+Created~Ticket Name~Owner~Company~Company Owner~Emails~Category~Subcategory~Summary~Closed~First Reply After
 """
 
 from __future__ import annotations
@@ -546,6 +546,28 @@ def fetch_ticket_company_name(token: str, ticket_id: str) -> str:
     return "Unknown"
 
 
+def fetch_ticket_company_info(token: str, ticket_id: str, owner_map: dict[str, str]) -> tuple[str, str]:
+    company_ids = fetch_ticket_company_ids(token, ticket_id)
+    if not company_ids:
+        return "Unknown", "Unknown"
+
+    try:
+        companies = fetch_objects_batch(token, "companies", [company_ids[0]], ["name", "hubspot_owner_id"])
+        if companies and isinstance(companies[0], dict):
+            props = companies[0].get("properties", {})
+            if isinstance(props, dict):
+                name = normalize_space(str(props.get("name") or ""))
+                if not name or company_name_is_blocked(name):
+                    name = "Unknown"
+                owner_id = str(props.get("hubspot_owner_id") or "").strip()
+                owner = owner_map.get(owner_id, owner_id) if owner_id else "Unknown"
+                return name, owner or "Unknown"
+    except Exception:
+        pass
+
+    return "Unknown", "Unknown"
+
+
 def fetch_ticket_contact_emails(token: str, ticket_id: str) -> str:
     contact_ids = fetch_ticket_contact_ids(token, ticket_id)
     if not contact_ids:
@@ -915,7 +937,7 @@ def main() -> int:
         owner_id = str(get_nested(t, args.owner_key) or "")
         ticket_url = build_ticket_url(t, args.ticket_url_key, args.ticket_id_key, args.ticket_url_template)
         ticket_name = first_non_empty_paths(t, args.ticket_name_key) or ticket_url
-        company_name = fetch_ticket_company_name(token, ticket_id) if ticket_id else ""
+        company_name, company_owner = fetch_ticket_company_info(token, ticket_id, owner_map) if ticket_id else ("", "")
         emails = fetch_ticket_contact_emails(token, ticket_id) if ticket_id else ""
         if not emails:
             email_set = set(extract_emails_from_text(convo))
@@ -928,6 +950,7 @@ def main() -> int:
             "Ticket Name": csv_hyperlink_formula(ticket_url, ticket_name),
             "Owner": owner_map.get(owner_id, owner_id),
             "Company": company_name,
+            "Company Owner": company_owner,
             "Emails": emails,
             "Category": category,
             "Subcategory": subcategory,
@@ -943,6 +966,7 @@ def main() -> int:
                 "created": row["Created"],
                 "owner": row["Owner"],
                 "company": row["Company"],
+                "company_owner": row["Company Owner"],
                 "category": row["Category"],
                 "subcategory": row["Subcategory"],
                 "failure_reason": gemini_failure_reason[:400],
@@ -977,7 +1001,7 @@ def main() -> int:
     with open(args.output, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["Created", "Ticket Name", "Owner", "Company", "Emails", "Category", "Subcategory", "Summary", "Closed", "First Reply After"],
+            fieldnames=["Created", "Ticket Name", "Owner", "Company", "Company Owner", "Emails", "Category", "Subcategory", "Summary", "Closed", "First Reply After"],
             delimiter=delim,
             lineterminator="\n",
         )
@@ -996,6 +1020,7 @@ def main() -> int:
         "created",
         "owner",
         "company",
+        "company_owner",
         "category",
         "subcategory",
         "failure_reason",

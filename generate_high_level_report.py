@@ -297,22 +297,22 @@ Tickets needing backfill:
 
 def compute_company_counts(rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]], int]:
     counts = Counter(normalize_text(r.get("Company", "")) or "Unknown" for r in rows)
-    owner_counts: dict[str, Counter[str]] = {}
+    company_owner_counts: dict[str, Counter[str]] = {}
     for r in rows:
         company = normalize_text(r.get("Company", "")) or "Unknown"
-        owner = normalize_text(r.get("Owner", "")) or "Unknown"
-        owner_counts.setdefault(company, Counter())[owner] += 1
+        company_owner = normalize_text(r.get("Company Owner", "")) or normalize_text(r.get("Owner", "")) or "Unknown"
+        company_owner_counts.setdefault(company, Counter())[company_owner] += 1
     unknown_count = counts.get("Unknown", 0)
     ranked_counts = Counter({k: v for k, v in counts.items() if k != "Unknown"})
     total_ranked = sum(ranked_counts.values())
     out = []
     for company, cnt in ranked_counts.most_common():
-        owner = "Unknown"
-        if company in owner_counts and owner_counts[company]:
-            owner = owner_counts[company].most_common(1)[0][0]
+        company_owner = "Unknown"
+        if company in company_owner_counts and company_owner_counts[company]:
+            company_owner = company_owner_counts[company].most_common(1)[0][0]
         out.append({
             "company": company,
-            "owner": owner,
+            "company_owner": company_owner,
             "ticket_count": cnt,
             "share_pct": round((cnt / total_ranked) * 100, 1) if total_ranked else 0.0,
         })
@@ -469,7 +469,7 @@ def build_company_markdown_tables_by_owner(
 ) -> str:
     owners: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for i, row in enumerate(company_counts[:limit], start=1):
-        owner = str(row.get("owner") or "Unknown").strip() or "Unknown"
+        owner = str(row.get("company_owner") or "Unknown").strip() or "Unknown"
         owners.setdefault(owner, []).append((i, row))
 
     lines: list[str] = []
