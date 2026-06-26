@@ -427,7 +427,7 @@ def fetch_objects_batch(token: str, object_type: str, ids: list[str], properties
     return res if isinstance(res, list) else []
 
 
-def resolve_company_account_manager_property(token: str, explicit_property: str = "") -> str:
+def resolve_company_account_manager_property(token: str, explicit_property: str = "account_manager") -> str:
     if explicit_property.strip():
         return explicit_property.strip()
     try:
@@ -793,7 +793,7 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=100)
     parser.add_argument("--properties", default=DEFAULT_PROPERTIES)
     parser.add_argument("--support-pipeline-id", default="0", help="HubSpot hs_pipeline id for Support pipeline")
-    parser.add_argument("--company-account-manager-property", default="", help="HubSpot company property to use for account manager grouping. Auto-detects by label if omitted.")
+    parser.add_argument("--company-account-manager-property", default="account_manager", help="HubSpot company property to use for account manager grouping.")
     parser.add_argument("--start-date", default="", help="UTC/ISO start (inclusive), e.g. 2026-04-04 or 2026-04-04T00:00:00Z")
     parser.add_argument("--end-date", default="", help="UTC/ISO end (exclusive recommended), e.g. 2026-04-11 or 2026-04-11T00:00:00Z")
     parser.add_argument("--conversation-max-chars", type=int, default=8000)
