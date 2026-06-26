@@ -297,12 +297,25 @@ Tickets needing backfill:
 
 def compute_company_counts(rows: list[dict[str, str]]) -> tuple[list[dict[str, Any]], int]:
     counts = Counter(normalize_text(r.get("Company", "")) or "Unknown" for r in rows)
+    owner_counts: dict[str, Counter[str]] = {}
+    for r in rows:
+        company = normalize_text(r.get("Company", "")) or "Unknown"
+        owner = normalize_text(r.get("Owner", "")) or "Unknown"
+        owner_counts.setdefault(company, Counter())[owner] += 1
     unknown_count = counts.get("Unknown", 0)
     ranked_counts = Counter({k: v for k, v in counts.items() if k != "Unknown"})
     total_ranked = sum(ranked_counts.values())
     out = []
     for company, cnt in ranked_counts.most_common():
-        out.append({"company": company, "ticket_count": cnt, "share_pct": round((cnt / total_ranked) * 100, 1) if total_ranked else 0.0})
+        owner = "Unknown"
+        if company in owner_counts and owner_counts[company]:
+            owner = owner_counts[company].most_common(1)[0][0]
+        out.append({
+            "company": company,
+            "owner": owner,
+            "ticket_count": cnt,
+            "share_pct": round((cnt / total_ranked) * 100, 1) if total_ranked else 0.0,
+        })
     return out, unknown_count
 
 
@@ -449,22 +462,32 @@ def build_institution_trend_map(trends_json: dict[str, Any], rows: list[dict[str
     return out
 
 
-def build_company_markdown_table(
+def build_company_markdown_tables_by_owner(
     company_counts: list[dict[str, Any]],
     institution_trend_map: dict[str, str],
     limit: int = 15,
 ) -> str:
-    lines = [
-        "| Rank | Institution | Tickets | Share | Institutional Trends |",
-        "|---:|---|---:|---:|---|",
-    ]
+    owners: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for i, row in enumerate(company_counts[:limit], start=1):
-        company = str(row.get("company", ""))
-        trend_text = institution_trend_map.get(company.lower(), "")
-        lines.append(
-            f"| {i} | {company} | {row['ticket_count']} | {row['share_pct']}% | {trend_text} |"
-        )
-    return "\n".join(lines)
+        owner = str(row.get("owner") or "Unknown").strip() or "Unknown"
+        owners.setdefault(owner, []).append((i, row))
+
+    lines: list[str] = []
+    for owner in sorted(owners.keys()):
+        lines.extend([
+            f"### {owner}",
+            "",
+            "| Rank | Institution | Tickets | Share | Institutional Trends |",
+            "|---:|---|---:|---:|---|",
+        ])
+        for rank, row in owners[owner]:
+            company = str(row.get("company", ""))
+            trend_text = institution_trend_map.get(company.lower(), "")
+            lines.append(
+                f"| {rank} | {company} | {row['ticket_count']} | {row['share_pct']}% | {trend_text} |"
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip()
 
 
 def build_fallback_trends_json(rows: list[dict[str, str]]) -> dict[str, Any]:
@@ -544,9 +567,7 @@ def main() -> int:
     write_rows(enriched_csv, rows, delimiter=delim)
 
     company_counts, unknown_company_count = compute_company_counts(rows)
-    class_code_company_counts = compute_class_code_company_counts(rows, limit=30)
     (outdir / "company_counts.json").write_text(json.dumps(company_counts, indent=2), encoding="utf-8")
-    (outdir / "class_code_company_counts.json").write_text(json.dumps(class_code_company_counts, indent=2), encoding="utf-8")
 
     corpus = build_ticket_corpus(rows, args.max_rows)
     prompt_trends = f"""
@@ -608,21 +629,19 @@ Ticket rows:
     md_parts = [
         title,
         "",
-        "## Top Institutions By Ticket Volume",
-        build_company_markdown_table(company_counts, institution_trend_map, limit=20),
-        "",
-        "## Top Class Codes By Institution",
     ]
-    md_parts.extend(render_class_code_lines(class_code_company_counts[:20]))
-    md_parts.append("")
-
     md_parts.extend(render_trend_text_sections(trends_json if isinstance(trends_json, dict) else {}, rows))
+    md_parts.extend([
+        "",
+        "## Top Institutions By Ticket Volume",
+        build_company_markdown_tables_by_owner(company_counts, institution_trend_map, limit=20),
+        "",
+    ])
     (outdir / "final_report.md").write_text("\n".join(md_parts), encoding="utf-8")
 
     print(f"Wrote report artifacts to: {outdir}")
     print(f"Enriched CSV: {enriched_csv}")
     print(f"Company counts: {outdir / 'company_counts.json'}")
-    print(f"Class-code company counts: {outdir / 'class_code_company_counts.json'}")
     print(f"Trend insights: {outdir / 'trend_insights.json'}")
     print(f"Final report: {outdir / 'final_report.md'}")
     return 0
