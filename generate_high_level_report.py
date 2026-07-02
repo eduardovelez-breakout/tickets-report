@@ -544,6 +544,21 @@ def render_html_trends(trends_json: dict[str, Any]) -> str:
     return "\n".join(items)
 
 
+def render_html_trend_box(trends_json: dict[str, Any]) -> str:
+    return (
+        '<table class="trend-box"><tr><td>'
+        '<p class="trend-title">TRENDS THIS WEEK</p>'
+        f"{render_html_trends(trends_json)}"
+        "</td></tr></table>"
+    )
+
+
+def render_html_tag_table(count: int, tags: list[str]) -> str:
+    cells = [f'<td class="tag-cell count-tag">{count} {ticket_word(count)}</td>']
+    cells.extend(f'<td class="tag-cell issue-tag">{html_escape(tag)}</td>' for tag in tags[:2])
+    return f'<table class="tag-table"><tr>{"".join(cells)}</tr></table>'
+
+
 def render_html_account_sections(
     rows: list[dict[str, str]],
     company_counts: list[dict[str, Any]],
@@ -589,24 +604,27 @@ def render_html_account_sections(
                     else f"{count} {ticket_word(count)} this week. Review the related tickets for repeated account-specific friction."
                 )
             tags = top_issue_tags(source_rows)
-            tag_html = [f"<span class=\"tag count-tag\">{count} {ticket_word(count)}</span>"]
-            tag_html.extend(f"<span class=\"tag issue-tag\">{html_escape(tag)}</span>" for tag in tags)
+            tag_html = render_html_tag_table(count, tags)
             action = strip_markdown_links(insight.get("next_step", ""))
             if account_manager == "Unassigned accounts":
                 action = "Assign account ownership so someone can follow up."
             elif not action and (count > 1 or tags):
                 action = "Review whether the account needs proactive follow-up."
-            action_html = f"<p class=\"action\">&rarr; {html_escape(action)}</p>" if action else "<p class=\"action empty\">&nbsp;</p>"
+            action_html = (
+                f'<table class="action-table"><tr><td><p class="action">&rarr; {html_escape(action)}</p></td></tr></table>'
+                if action
+                else '<p class="action empty">&nbsp;</p>'
+            )
             sections.append(
-                "<div class=\"institution-card\">"
+                '<table class="institution-card"><tr><td class="institution-card-cell">'
                 "<table class=\"institution-head\"><tr>"
                 f"<td class=\"institution-name\">{html_escape(company)}</td>"
                 f"<td class=\"ticket-refs\">{html_escape(ticket_refs(source_indexes) or f'{count} {ticket_word(count)}')}</td>"
                 "</tr></table>"
                 f"<p class=\"institution-summary\">{html_escape(trend)}</p>"
-                f"<div class=\"tags\">{''.join(tag_html)}</div>"
+                f"{tag_html}"
                 f"{action_html}"
-                "</div>"
+                "</td></tr></table>"
             )
         sections.append("</section>")
     return "\n".join(sections)
@@ -639,26 +657,30 @@ def render_final_report_html(
     .stats td {{ border:1pt solid #d1d5db; background:#f3f4f6; padding:6pt 8pt; width:150pt; vertical-align:top; }}
     .stat-label {{ color:#6b7280; font-size:8pt; }}
     .stat-value {{ color:#1a3a5c; font-size:24pt; font-weight:700; margin-top:3pt; }}
-    .trend-box {{ border:1pt solid #f59e0b; border-left:2.2pt solid #f59e0b; background:#fef3c7; padding:7pt 9pt; margin:0 0 22pt 0; width:448pt; }}
+    .trend-box {{ border-collapse:collapse; margin:0 0 22pt 0; width:468pt; }}
+    .trend-box td {{ border:1pt solid #f59e0b; border-left:2.2pt solid #f59e0b; background:#fef3c7; padding:7pt 9pt; vertical-align:top; }}
     .trend-title {{ color:#92400e; font-size:9pt; font-weight:700; margin-bottom:6pt; }}
     .trend-line {{ color:#374151; font-size:10pt; line-height:1.25; margin:3pt 0; }}
     .bullet {{ color:#92400e; padding-right:6pt; }}
     .section-label {{ color:#6b7280; font-size:9pt; font-weight:700; margin:12pt 0 8pt 0; }}
-    .account-section {{ margin:0 0 18pt 0; border-top:0.8pt solid #d1d5db; padding-top:10pt; }}
+    .account-section {{ margin:0 0 18pt 0; padding-top:10pt; }}
     .am-header {{ border-collapse:collapse; width:468pt; margin-bottom:8pt; }}
     .am-initials {{ width:36pt; background:#d6e8f7; color:#2e6da4; font-size:10pt; font-weight:700; text-align:center; padding:4pt; }}
     .am-name {{ width:342pt; color:#1a3a5c; font-size:13pt; font-weight:700; padding:4pt 8pt; }}
     .am-count {{ width:90pt; color:#6b7280; font-size:10pt; text-align:right; padding:4pt; }}
-    .institution-card {{ border:1pt solid #d1d5db; background:#ffffff; padding:8pt; width:450pt; margin:0 0 8pt 0; }}
+    .institution-card {{ border-collapse:collapse; width:468pt; margin:0 0 8pt 0; }}
+    .institution-card-cell {{ border:1pt solid #d1d5db; background:#ffffff; padding:8pt; vertical-align:top; }}
     .institution-head {{ border-collapse:collapse; width:100%; }}
     .institution-name {{ color:#1a3a5c; font-size:11pt; font-weight:700; width:70%; }}
     .ticket-refs {{ color:#6b7280; font-size:9pt; text-align:right; width:30%; }}
     .institution-summary {{ color:#374151; font-size:10pt; line-height:1.3; margin:8pt 0; }}
-    .tags {{ margin:4pt 0 7pt 0; }}
-    .tag {{ display:inline-block; font-size:8pt; font-weight:700; padding:3pt 8pt; margin:0 4pt 4pt 0; }}
+    .tag-table {{ border-collapse:collapse; margin:4pt 0 7pt 0; }}
+    .tag-cell {{ font-size:8pt; font-weight:700; padding:3pt 8pt; border:0; }}
     .count-tag {{ background:#f3f4f6; color:#6b7280; }}
     .issue-tag {{ background:#fef3c7; color:#92400e; }}
-    .action {{ border-top:0.5pt solid #d1d5db; color:#2e6da4; font-size:9pt; padding-top:5pt; }}
+    .action-table {{ border-collapse:collapse; width:100%; margin-top:4pt; }}
+    .action-table td {{ border-top:0.5pt solid #d1d5db; padding-top:5pt; }}
+    .action {{ color:#2e6da4; font-size:9pt; }}
     .action.empty {{ color:#ffffff; }}
     .footer {{ background:#f3f4f6; color:#6b7280; font-size:9pt; padding:7pt 8pt; margin-top:18pt; width:450pt; }}
   </style>
@@ -672,10 +694,7 @@ def render_final_report_html(
     <td><p class="stat-label">INSTITUTIONS AFFECTED</p><p class="stat-value">{institution_count}</p></td>
     <td><p class="stat-label">SYSTEMIC TRENDS</p><p class="stat-value">{trend_count}</p></td>
   </tr></table>
-  <div class="trend-box">
-    <p class="trend-title">TRENDS THIS WEEK</p>
-    {render_html_trends(trends_json)}
-  </div>
+  {render_html_trend_box(trends_json)}
   <p class="section-label">ACCOUNTS</p>
   {render_html_account_sections(rows, company_counts, institution_insight_map, limit=20)}
   <p class="footer">Questions about a specific ticket? Reach out to the support team. This report is generated weekly.</p>
