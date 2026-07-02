@@ -618,7 +618,7 @@ def render_html_account_sections(
             sections.append(
                 '<table class="institution-card"><tr><td class="institution-card-cell">'
                 "<table class=\"institution-head\"><tr>"
-                f"<td class=\"institution-name\">{html_escape(company)}</td>"
+                f"<td class=\"institution-name\"><b>{html_escape(company)}</b></td>"
                 f"<td class=\"ticket-refs\">{html_escape(ticket_refs(source_indexes) or f'{count} {ticket_word(count)}')}</td>"
                 "</tr></table>"
                 f"<p class=\"institution-summary\">{html_escape(trend)}</p>"
