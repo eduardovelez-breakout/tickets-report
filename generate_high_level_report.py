@@ -538,9 +538,9 @@ def render_html_trends(trends_json: dict[str, Any]) -> str:
         why = strip_markdown_links(str(trend.get("why_it_matters", "")).strip())
         text = label if not why else f"{label} - {why}"
         if text:
-            items.append(f"<p class=\"trend-line\"><span class=\"bullet\">&bull;</span>{html_escape(text)}</p>")
+            items.append(f"<p class=\"trend-line\"><span class=\"bullet\">&bull;&nbsp;</span>{html_escape(text)}</p>")
     if not items:
-        items.append("<p class=\"trend-line\"><span class=\"bullet\">&bull;</span>No clear systemic trends identified this week.</p>")
+        items.append("<p class=\"trend-line\"><span class=\"bullet\">&bull;&nbsp;</span>No clear systemic trends identified this week.</p>")
     return "\n".join(items)
 
 
@@ -665,21 +665,21 @@ def render_final_report_html(
     .section-label {{ color:#6b7280; font-size:9pt; font-weight:700; margin:12pt 0 8pt 0; }}
     .account-section {{ margin:0 0 18pt 0; padding-top:10pt; }}
     .am-header {{ border-collapse:collapse; width:468pt; margin-bottom:8pt; }}
-    .am-initials {{ width:36pt; background:#d6e8f7; color:#2e6da4; font-size:10pt; font-weight:700; text-align:center; padding:4pt; }}
-    .am-name {{ width:342pt; color:#1a3a5c; font-size:13pt; font-weight:700; padding:4pt 8pt; }}
-    .am-count {{ width:90pt; color:#6b7280; font-size:10pt; text-align:right; padding:4pt; }}
-    .institution-card {{ border-collapse:collapse; width:468pt; margin:0 0 8pt 0; }}
+    .am-initials {{ width:36pt; background:#d6e8f7; color:#2e6da4; font-size:10pt; font-weight:700; text-align:center; padding:4pt; border:0pt solid #ffffff; }}
+    .am-name {{ width:342pt; color:#1a3a5c; font-size:13pt; font-weight:700; padding:4pt 8pt; border:0pt solid #ffffff; }}
+    .am-count {{ width:90pt; color:#6b7280; font-size:10pt; text-align:right; padding:4pt; border:0pt solid #ffffff; }}
+    .institution-card {{ border-collapse:collapse; width:468pt; margin:0 0 8pt 0; page-break-inside:avoid; break-inside:avoid; }}
     .institution-card-cell {{ border:1pt solid #d1d5db; background:#ffffff; padding:8pt; vertical-align:top; }}
     .institution-head {{ border-collapse:collapse; width:100%; }}
-    .institution-name {{ color:#1a3a5c; font-size:11pt; font-weight:700; width:70%; }}
-    .ticket-refs {{ color:#6b7280; font-size:9pt; text-align:right; width:30%; }}
+    .institution-name {{ color:#1a3a5c; font-size:11pt; font-weight:700; width:70%; border:0pt solid #ffffff; }}
+    .ticket-refs {{ color:#6b7280; font-size:9pt; text-align:right; width:30%; border:0pt solid #ffffff; }}
     .institution-summary {{ color:#374151; font-size:10pt; line-height:1.3; margin:8pt 0; }}
     .tag-table {{ border-collapse:collapse; margin:4pt 0 7pt 0; }}
     .tag-cell {{ font-size:8pt; font-weight:700; padding:3pt 8pt; border:0; }}
     .count-tag {{ background:#f3f4f6; color:#6b7280; }}
     .issue-tag {{ background:#fef3c7; color:#92400e; }}
     .action-table {{ border-collapse:collapse; width:100%; margin-top:4pt; }}
-    .action-table td {{ border-top:0.5pt solid #d1d5db; padding-top:5pt; }}
+    .action-table td {{ border-top:0.5pt solid #d1d5db; border-left:0pt solid #ffffff; border-right:0pt solid #ffffff; border-bottom:0pt solid #ffffff; padding-top:5pt; }}
     .action {{ color:#2e6da4; font-size:9pt; }}
     .action.empty {{ color:#ffffff; }}
     .footer {{ background:#f3f4f6; color:#6b7280; font-size:9pt; padding:7pt 8pt; margin-top:18pt; width:450pt; }}
