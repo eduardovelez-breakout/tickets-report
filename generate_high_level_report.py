@@ -554,8 +554,8 @@ def render_html_trend_box(trends_json: dict[str, Any]) -> str:
 
 
 def render_html_tag_table(count: int, tags: list[str]) -> str:
-    cells = [f'<td class="tag-cell count-tag">{count} {ticket_word(count)}</td>']
-    cells.extend(f'<td class="tag-cell issue-tag">{html_escape(tag)}</td>' for tag in tags[:2])
+    cells = [f'<td class="tag-cell count-tag"><b>{count} {ticket_word(count)}</b></td>']
+    cells.extend(f'<td class="tag-cell issue-tag"><b>{html_escape(tag)}</b></td>' for tag in tags[:2])
     return f'<table class="tag-table"><tr>{"".join(cells)}</tr></table>'
 
 
@@ -587,7 +587,7 @@ def render_html_account_sections(
             "<table class=\"am-header\"><tr>"
             f"<td class=\"am-initials\">{html_escape(initials(account_manager))}</td>"
             f"<td class=\"am-name\">{html_escape(account_manager)}</td>"
-            f"<td class=\"am-count\">{total} {ticket_word(total)}</td>"
+            f"<td class=\"am-count\"><b>{total} {ticket_word(total)}</b></td>"
             "</tr></table>"
         )
         for company_row in companies:
@@ -665,9 +665,9 @@ def render_final_report_html(
     .section-label {{ color:#6b7280; font-size:9pt; font-weight:700; margin:12pt 0 8pt 0; }}
     .account-section {{ margin:0 0 18pt 0; padding-top:10pt; }}
     .am-header {{ border-collapse:collapse; width:468pt; margin-bottom:8pt; }}
-    .am-initials {{ width:36pt; background:#d6e8f7; color:#2e6da4; font-size:10pt; font-weight:700; text-align:center; padding:4pt; border:0pt solid #ffffff; }}
-    .am-name {{ width:342pt; color:#1a3a5c; font-size:13pt; font-weight:700; padding:4pt 8pt; border:0pt solid #ffffff; }}
-    .am-count {{ width:90pt; color:#6b7280; font-size:10pt; text-align:right; padding:4pt; border:0pt solid #ffffff; }}
+    .am-initials {{ width:36pt; background:#d6e8f7; color:#2e6da4; font-size:10pt; font-weight:700; text-align:center; padding:4pt; border-top:0.8pt solid #d1d5db; border-left:0pt solid #ffffff; border-right:0pt solid #ffffff; border-bottom:0pt solid #ffffff; }}
+    .am-name {{ width:342pt; color:#1a3a5c; font-size:13pt; font-weight:700; padding:4pt 8pt; border-top:0.8pt solid #d1d5db; border-left:0pt solid #ffffff; border-right:0pt solid #ffffff; border-bottom:0pt solid #ffffff; }}
+    .am-count {{ width:90pt; color:#6b7280; font-size:10pt; font-weight:700; text-align:right; padding:4pt; border-top:0.8pt solid #d1d5db; border-left:0pt solid #ffffff; border-right:0pt solid #ffffff; border-bottom:0pt solid #ffffff; }}
     .institution-card {{ border-collapse:collapse; width:468pt; margin:0 0 8pt 0; page-break-inside:avoid; break-inside:avoid; }}
     .institution-card-cell {{ border:1pt solid #d1d5db; background:#ffffff; padding:8pt; vertical-align:top; }}
     .institution-head {{ border-collapse:collapse; width:100%; }}
