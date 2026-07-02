@@ -6,12 +6,14 @@ Outputs:
 - report_artifacts/company_counts.json
 - report_artifacts/trend_insights.json
 - report_artifacts/final_report.md
+- report_artifacts/final_report.html
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
+import html
 import json
 import os
 import re
@@ -100,6 +102,13 @@ def normalize_text(v: str) -> str:
     return re.sub(r"\s+", " ", str(v or "")).strip()
 
 
+def normalize_person_name(value: str) -> str:
+    name = normalize_text(value)
+    if not name or re.fullmatch(r"\d{6,}", name):
+        return ""
+    return name
+
+
 
 
 def derive_date_range_label(rows: list[dict[str, str]]) -> str:
@@ -114,6 +123,27 @@ def derive_date_range_label(rows: list[dict[str, str]]) -> str:
     if not dates:
         return ""
     return f"{min(dates)} to {max(dates)}"
+
+
+def derive_display_date_range(rows: list[dict[str, str]]) -> str:
+    raw = derive_date_range_label(rows)
+    if not raw or " to " not in raw:
+        return raw
+    start_s, end_s = raw.split(" to ", 1)
+    try:
+        start = datetime_from_ymd(start_s)
+        end = datetime_from_ymd(end_s)
+    except ValueError:
+        return raw
+    if start.year == end.year:
+        return f"{start.strftime('%b')} {start.day} - {end.strftime('%b')} {end.day}, {end.year}"
+    return f"{start.strftime('%b')} {start.day}, {start.year} - {end.strftime('%b')} {end.day}, {end.year}"
+
+
+def datetime_from_ymd(value: str) -> Any:
+    from datetime import datetime
+
+    return datetime.strptime(value, "%Y-%m-%d")
 
 
 def build_ticket_corpus(rows: list[dict[str, str]], max_rows: int) -> str:
@@ -301,9 +331,9 @@ def compute_company_counts(rows: list[dict[str, str]]) -> tuple[list[dict[str, A
     for r in rows:
         company = normalize_text(r.get("Company", "")) or "Unknown"
         account_manager = (
-            normalize_text(r.get("Account Manager", ""))
-            or normalize_text(r.get("Company Owner", ""))
-            or normalize_text(r.get("Owner", ""))
+            normalize_person_name(r.get("Account Manager", ""))
+            or normalize_person_name(r.get("Company Owner", ""))
+            or normalize_person_name(r.get("Owner", ""))
             or "Unknown"
         )
         account_manager_counts.setdefault(company, Counter())[account_manager] += 1
@@ -378,8 +408,6 @@ def extract_ticket_url(row: dict[str, str]) -> str:
     return ""
 
 
-
-
 def format_citation_labels(indexes: Any, rows: list[dict[str, str]]) -> str:
     if not isinstance(indexes, list):
         return ""
@@ -449,8 +477,215 @@ def render_trend_text_sections(trends_json: dict[str, Any], rows: list[dict[str,
     return lines
 
 
-def build_institution_trend_map(trends_json: dict[str, Any], rows: list[dict[str, str]]) -> dict[str, str]:
-    out: dict[str, str] = {}
+def strip_markdown_links(value: str) -> str:
+    s = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    return re.sub(r"\s+", " ", s).strip()
+
+
+def html_escape(value: Any) -> str:
+    return html.escape(str(value or ""), quote=True)
+
+
+def initials(name: str) -> str:
+    parts = [p for p in re.split(r"\s+", normalize_text(name)) if p]
+    if not parts or normalize_text(name).lower() == "unknown":
+        return "?"
+    return "".join(p[0].upper() for p in parts[:2])
+
+
+def ticket_word(count: int) -> str:
+    return "ticket" if count == 1 else "tickets"
+
+
+def ticket_refs(indexes: list[int]) -> str:
+    if not indexes:
+        return ""
+    if len(indexes) == 1:
+        return f"Ticket #{indexes[0]}"
+    shown = ", ".join(f"#{i}" for i in indexes[:5])
+    if len(indexes) > 5:
+        shown += f", +{len(indexes) - 5}"
+    return f"Tickets {shown}"
+
+
+def top_issue_tags(rows: list[dict[str, str]], max_tags: int = 2) -> list[str]:
+    counts: Counter[str] = Counter()
+    for row in rows:
+        for key in ("Subcategory", "Category"):
+            value = normalize_text(row.get(key, ""))
+            if "@" in value or value.startswith("http"):
+                continue
+            if value and value.lower() not in {"unknown", "other", "none"}:
+                counts[value] += 1
+    return [tag for tag, _ in counts.most_common(max_tags)]
+
+
+def company_row_indexes(rows: list[dict[str, str]]) -> dict[str, list[int]]:
+    out: dict[str, list[int]] = {}
+    for i, row in enumerate(rows, start=1):
+        company = normalize_text(row.get("Company", "")) or "Unknown"
+        out.setdefault(company, []).append(i)
+    return out
+
+
+def render_html_trends(trends_json: dict[str, Any]) -> str:
+    trends = trends_json.get("key_trends", []) if isinstance(trends_json, dict) else []
+    items: list[str] = []
+    for trend in trends[:3] if isinstance(trends, list) else []:
+        if not isinstance(trend, dict):
+            continue
+        label = strip_markdown_links(str(trend.get("trend", "")).strip())
+        why = strip_markdown_links(str(trend.get("why_it_matters", "")).strip())
+        text = label if not why else f"{label} - {why}"
+        if text:
+            items.append(f"<p class=\"trend-line\"><span class=\"bullet\">&bull;</span>{html_escape(text)}</p>")
+    if not items:
+        items.append("<p class=\"trend-line\"><span class=\"bullet\">&bull;</span>No clear systemic trends identified this week.</p>")
+    return "\n".join(items)
+
+
+def render_html_account_sections(
+    rows: list[dict[str, str]],
+    company_counts: list[dict[str, Any]],
+    institution_insight_map: dict[str, dict[str, str]],
+    limit: int = 20,
+) -> str:
+    indexes_by_company = company_row_indexes(rows)
+    rows_by_company: dict[str, list[dict[str, str]]] = {}
+    for row in rows:
+        company = normalize_text(row.get("Company", "")) or "Unknown"
+        rows_by_company.setdefault(company, []).append(row)
+
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for company_row in company_counts[:limit]:
+        am = normalize_text(str(company_row.get("account_manager") or "")) or "Unassigned accounts"
+        if am.lower() == "unknown":
+            am = "Unassigned accounts"
+        grouped.setdefault(am, []).append(company_row)
+
+    sections: list[str] = []
+    for account_manager in sorted(grouped.keys()):
+        companies = grouped[account_manager]
+        total = sum(int(c.get("ticket_count", 0) or 0) for c in companies)
+        sections.append(
+            "<section class=\"account-section\">"
+            "<table class=\"am-header\"><tr>"
+            f"<td class=\"am-initials\">{html_escape(initials(account_manager))}</td>"
+            f"<td class=\"am-name\">{html_escape(account_manager)}</td>"
+            f"<td class=\"am-count\">{total} {ticket_word(total)}</td>"
+            "</tr></table>"
+        )
+        for company_row in companies:
+            company = str(company_row.get("company", "")).strip()
+            count = int(company_row.get("ticket_count", 0) or 0)
+            source_indexes = indexes_by_company.get(company, [])
+            source_rows = rows_by_company.get(company, [])
+            insight = institution_insight_map.get(company.lower(), {})
+            trend = strip_markdown_links(insight.get("summary", ""))
+            if not trend:
+                trend = (
+                    f"{count} {ticket_word(count)} this week. No systemic pattern identified."
+                    if count == 1
+                    else f"{count} {ticket_word(count)} this week. Review the related tickets for repeated account-specific friction."
+                )
+            tags = top_issue_tags(source_rows)
+            tag_html = [f"<span class=\"tag count-tag\">{count} {ticket_word(count)}</span>"]
+            tag_html.extend(f"<span class=\"tag issue-tag\">{html_escape(tag)}</span>" for tag in tags)
+            action = strip_markdown_links(insight.get("next_step", ""))
+            if account_manager == "Unassigned accounts":
+                action = "Assign account ownership so someone can follow up."
+            elif not action and (count > 1 or tags):
+                action = "Review whether the account needs proactive follow-up."
+            action_html = f"<p class=\"action\">&rarr; {html_escape(action)}</p>" if action else "<p class=\"action empty\">&nbsp;</p>"
+            sections.append(
+                "<div class=\"institution-card\">"
+                "<table class=\"institution-head\"><tr>"
+                f"<td class=\"institution-name\">{html_escape(company)}</td>"
+                f"<td class=\"ticket-refs\">{html_escape(ticket_refs(source_indexes) or f'{count} {ticket_word(count)}')}</td>"
+                "</tr></table>"
+                f"<p class=\"institution-summary\">{html_escape(trend)}</p>"
+                f"<div class=\"tags\">{''.join(tag_html)}</div>"
+                f"{action_html}"
+                "</div>"
+            )
+        sections.append("</section>")
+    return "\n".join(sections)
+
+
+def render_final_report_html(
+    rows: list[dict[str, str]],
+    company_counts: list[dict[str, Any]],
+    trends_json: dict[str, Any],
+    institution_insight_map: dict[str, dict[str, str]],
+) -> str:
+    total_tickets = len(rows)
+    institution_count = len(company_counts)
+    key_trends = trends_json.get("key_trends", []) if isinstance(trends_json, dict) else []
+    trend_count = len(key_trends) if isinstance(key_trends, list) else 0
+    display_range = derive_display_date_range(rows)
+    range_line = f"Weekly support report &middot; {html_escape(display_range)}" if display_range else "Weekly support report"
+    return f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {{ margin:0; padding:54pt; max-width:504pt; color:#111827; font-family:Arial, sans-serif; background:#ffffff; }}
+    p {{ margin:0; }}
+    .eyebrow {{ color:#6b7280; font-size:9pt; margin-bottom:4pt; }}
+    .title {{ color:#1a3a5c; font-size:24pt; font-weight:700; margin-bottom:2pt; }}
+    .title span {{ font-size:20pt; }}
+    .subtitle {{ color:#6b7280; font-size:10pt; margin-bottom:16pt; }}
+    .stats {{ border-collapse:collapse; margin:12pt 0 18pt 0; width:450pt; }}
+    .stats td {{ border:1pt solid #d1d5db; background:#f3f4f6; padding:6pt 8pt; width:150pt; vertical-align:top; }}
+    .stat-label {{ color:#6b7280; font-size:8pt; }}
+    .stat-value {{ color:#1a3a5c; font-size:24pt; font-weight:700; margin-top:3pt; }}
+    .trend-box {{ border:1pt solid #f59e0b; border-left:2.2pt solid #f59e0b; background:#fef3c7; padding:7pt 9pt; margin:0 0 22pt 0; width:448pt; }}
+    .trend-title {{ color:#92400e; font-size:9pt; font-weight:700; margin-bottom:6pt; }}
+    .trend-line {{ color:#374151; font-size:10pt; line-height:1.25; margin:3pt 0; }}
+    .bullet {{ color:#92400e; padding-right:6pt; }}
+    .section-label {{ color:#6b7280; font-size:9pt; font-weight:700; margin:12pt 0 8pt 0; }}
+    .account-section {{ margin:0 0 18pt 0; border-top:0.8pt solid #d1d5db; padding-top:10pt; }}
+    .am-header {{ border-collapse:collapse; width:468pt; margin-bottom:8pt; }}
+    .am-initials {{ width:36pt; background:#d6e8f7; color:#2e6da4; font-size:10pt; font-weight:700; text-align:center; padding:4pt; }}
+    .am-name {{ width:342pt; color:#1a3a5c; font-size:13pt; font-weight:700; padding:4pt 8pt; }}
+    .am-count {{ width:90pt; color:#6b7280; font-size:10pt; text-align:right; padding:4pt; }}
+    .institution-card {{ border:1pt solid #d1d5db; background:#ffffff; padding:8pt; width:450pt; margin:0 0 8pt 0; }}
+    .institution-head {{ border-collapse:collapse; width:100%; }}
+    .institution-name {{ color:#1a3a5c; font-size:11pt; font-weight:700; width:70%; }}
+    .ticket-refs {{ color:#6b7280; font-size:9pt; text-align:right; width:30%; }}
+    .institution-summary {{ color:#374151; font-size:10pt; line-height:1.3; margin:8pt 0; }}
+    .tags {{ margin:4pt 0 7pt 0; }}
+    .tag {{ display:inline-block; font-size:8pt; font-weight:700; padding:3pt 8pt; margin:0 4pt 4pt 0; }}
+    .count-tag {{ background:#f3f4f6; color:#6b7280; }}
+    .issue-tag {{ background:#fef3c7; color:#92400e; }}
+    .action {{ border-top:0.5pt solid #d1d5db; color:#2e6da4; font-size:9pt; padding-top:5pt; }}
+    .action.empty {{ color:#ffffff; }}
+    .footer {{ background:#f3f4f6; color:#6b7280; font-size:9pt; padding:7pt 8pt; margin-top:18pt; width:450pt; }}
+  </style>
+</head>
+<body>
+  <p class="eyebrow">{range_line}</p>
+  <p class="title">Support <span>at a glance</span></p>
+  <p class="subtitle">Review issues, spot patterns, and reach out proactively where needed.</p>
+  <table class="stats"><tr>
+    <td><p class="stat-label">TOTAL TICKETS</p><p class="stat-value">{total_tickets}</p></td>
+    <td><p class="stat-label">INSTITUTIONS AFFECTED</p><p class="stat-value">{institution_count}</p></td>
+    <td><p class="stat-label">SYSTEMIC TRENDS</p><p class="stat-value">{trend_count}</p></td>
+  </tr></table>
+  <div class="trend-box">
+    <p class="trend-title">TRENDS THIS WEEK</p>
+    {render_html_trends(trends_json)}
+  </div>
+  <p class="section-label">ACCOUNTS</p>
+  {render_html_account_sections(rows, company_counts, institution_insight_map, limit=20)}
+  <p class="footer">Questions about a specific ticket? Reach out to the support team. This report is generated weekly.</p>
+</body>
+</html>
+"""
+
+
+def build_institution_insight_map(trends_json: dict[str, Any], rows: list[dict[str, str]]) -> dict[str, dict[str, str]]:
+    out: dict[str, dict[str, str]] = {}
     patterns = trends_json.get("institution_friction_patterns", []) if isinstance(trends_json, dict) else []
     if not isinstance(patterns, list):
         return out
@@ -463,8 +698,17 @@ def build_institution_trend_map(trends_json: dict[str, Any], rows: list[dict[str
         arr = p.get("patterns", [])
         patterns_text = ", ".join(str(x).strip() for x in arr if str(x).strip()) if isinstance(arr, list) else ""
         cite = format_citation_labels(p.get("evidence_ticket_indexes"), rows)
-        out[inst.lower()] = (patterns_text + cite).strip() or ("No specific pattern provided" + cite)
+        next_step = str(p.get("next_step", "")).strip()
+        out[inst.lower()] = {
+            "summary": (patterns_text + cite).strip() or ("No specific pattern provided" + cite),
+            "next_step": next_step,
+        }
     return out
+
+
+def build_institution_trend_map(trends_json: dict[str, Any], rows: list[dict[str, str]]) -> dict[str, str]:
+    insights = build_institution_insight_map(trends_json, rows)
+    return {institution: data.get("summary", "") for institution, data in insights.items()}
 
 
 def build_company_markdown_tables_by_account_manager(
@@ -584,13 +828,16 @@ Return STRICT JSON with this exact shape:
     {{"trend": "", "why_it_matters": "", "evidence_ticket_indexes": [1,2,3]}}
   ],
   "institution_friction_patterns": [
-    {{"institution": "", "patterns": ["", ""], "evidence_ticket_indexes": [1,2]}}
+    {{"institution": "", "patterns": ["", ""], "next_step": "", "evidence_ticket_indexes": [1,2]}}
   ],
   "data_quality_caveats": [""]
 }}
 
 Rules:
-- Focus only on trend surfacing, not recommendations or action plans.
+- Focus on trend surfacing plus one short account-manager follow-up step per institution.
+- `next_step` should be an account-manager-facing next step, at most 16 words.
+- Keep `next_step` specific and practical; do not create broad action plans.
+- Leave `next_step` blank when there is no useful follow-up.
 - Do not invent institutions; use provided data.
 - Keep outputs concise and factual.
 - Keep every `trend` to at most 16 words.
@@ -621,10 +868,11 @@ Ticket rows:
         print(f"Warning: trend generation failed; using deterministic fallback: {exc}")
         trends_json = build_fallback_trends_json(rows)
     (outdir / "trend_insights.json").write_text(json.dumps(trends_json, indent=2), encoding="utf-8")
-    institution_trend_map = build_institution_trend_map(
+    institution_insight_map = build_institution_insight_map(
         trends_json if isinstance(trends_json, dict) else {},
         rows,
     )
+    institution_trend_map = {k: v.get("summary", "") for k, v in institution_insight_map.items()}
 
     date_range_label = derive_date_range_label(rows)
     title = "# Weekly Ticket Trend Report"
@@ -643,12 +891,22 @@ Ticket rows:
         "",
     ])
     (outdir / "final_report.md").write_text("\n".join(md_parts), encoding="utf-8")
+    (outdir / "final_report.html").write_text(
+        render_final_report_html(
+            rows,
+            company_counts,
+            trends_json if isinstance(trends_json, dict) else {},
+            institution_insight_map,
+        ),
+        encoding="utf-8",
+    )
 
     print(f"Wrote report artifacts to: {outdir}")
     print(f"Enriched CSV: {enriched_csv}")
     print(f"Company counts: {outdir / 'company_counts.json'}")
     print(f"Trend insights: {outdir / 'trend_insights.json'}")
     print(f"Final report: {outdir / 'final_report.md'}")
+    print(f"Final HTML report: {outdir / 'final_report.html'}")
     return 0
 
 

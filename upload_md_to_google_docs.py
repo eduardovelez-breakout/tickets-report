@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload a markdown file to Google Docs and print the Doc URL."""
+"""Upload a report file to Google Docs and print the Doc URL."""
 
 from __future__ import annotations
 
@@ -95,6 +95,12 @@ def sanitize_filename(value: str) -> str:
     return s or "weekly_ticket_report"
 
 
+def upload_mime_type(path: Path) -> str:
+    if path.suffix.lower() in {".html", ".htm"}:
+        return "text/html"
+    return "text/markdown"
+
+
 def _permission_not_found(exc: Exception) -> bool:
     if not isinstance(exc, HttpError):
         return False
@@ -120,7 +126,7 @@ def apply_permission_nonfatal(drive, file_id: str, body: dict[str, str]) -> None
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Upload markdown file to Google Docs")
+    parser = argparse.ArgumentParser(description="Upload report file to Google Docs")
     parser.add_argument("--file", default="report_artifacts/final_report.md")
     parser.add_argument("--csv-path", default="Tickets - Last 7 Days.csv")
     parser.add_argument("--credentials", default="google_service_account.json")
@@ -139,7 +145,7 @@ def main() -> int:
     parser.add_argument(
         "--fallback-save-dir",
         default="report_artifacts/pending_drive_uploads",
-        help="Directory to save markdown copy when Drive upload fails and allow-missing-doc-link is enabled",
+        help="Directory to save report copy when Drive upload fails and allow-missing-doc-link is enabled",
     )
     args = parser.parse_args()
 
@@ -158,7 +164,7 @@ def main() -> int:
     try:
         folder_id = args.folder_id.strip() or get_or_create_folder_id(drive, args.folder_name.strip() or "Weekly Ticket Reports")
 
-        media = MediaInMemoryUpload(content.encode("utf-8"), mimetype="text/markdown", resumable=False)
+        media = MediaInMemoryUpload(content.encode("utf-8"), mimetype=upload_mime_type(md_path), resumable=False)
         file_meta = {
             "name": title,
             "mimeType": "application/vnd.google-apps.document",
@@ -197,11 +203,12 @@ def main() -> int:
             fallback_dir = Path(args.fallback_save_dir)
             fallback_dir.mkdir(parents=True, exist_ok=True)
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            fallback_name = f"{sanitize_filename(title)}_{ts}.md"
+            fallback_ext = md_path.suffix if md_path.suffix else ".md"
+            fallback_name = f"{sanitize_filename(title)}_{ts}{fallback_ext}"
             fallback_path = fallback_dir / fallback_name
             fallback_path.write_text(content, encoding="utf-8")
             print(
-                f"Drive doc upload unavailable; saved fallback markdown to {fallback_path}: {exc}",
+                f"Drive doc upload unavailable; saved fallback report to {fallback_path}: {exc}",
                 file=sys.stderr,
             )
             print("")

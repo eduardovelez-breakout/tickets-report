@@ -116,7 +116,7 @@ jobs:
             --log-gemini-payload-chars 250 \
             $DATE_ARGS
 
-      - name: Generate weekly markdown report
+      - name: Generate weekly report
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
@@ -124,11 +124,11 @@ jobs:
             --api-key "$GEMINI_API_KEY" \
             --gemini-max-per-minute 20
 
-      - name: Upload markdown report to Google Docs
+      - name: Upload HTML report to Google Docs
         id: upload_report_doc
         run: |
           DOC_URL=$(python upload_md_to_google_docs.py \
-            --file "report_artifacts/final_report.md" \
+            --file "report_artifacts/final_report.html" \
             --csv-path "Tickets - Last 7 Days.csv" \
             --credentials google_service_account.json \
             --title-prefix "Weekly Ticket Report" \
@@ -140,12 +140,12 @@ jobs:
             --fallback-save-dir "report_artifacts/pending_drive_uploads")
           echo "doc_url=$DOC_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Upload fallback markdown artifact (if Drive failed)
+      - name: Upload fallback report artifact (if Drive failed)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: pending-drive-upload
-          path: report_artifacts/pending_drive_uploads/*.md
+          path: report_artifacts/pending_drive_uploads/*
           if-no-files-found: ignore
 
       - name: Upload CSV to Google Sheets
