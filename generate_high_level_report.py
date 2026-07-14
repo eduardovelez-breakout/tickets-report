@@ -408,6 +408,20 @@ def extract_ticket_url(row: dict[str, str]) -> str:
     return ""
 
 
+def extract_ticket_title(row: dict[str, str]) -> str:
+    raw = str(row.get("Ticket Name", "") or "").strip()
+    if not raw:
+        return "Untitled ticket"
+    m = re.search(r'=HYPERLINK\("[^"]+","((?:[^"]|"")*)"\)', raw)
+    if m:
+        return m.group(1).replace('""', '"').strip() or "Untitled ticket"
+    m = re.search(r'=HYPERLINK\("[^"]+","([^"]+)"\)', raw)
+    if m:
+        return m.group(1).strip() or "Untitled ticket"
+    raw = re.sub(r"https://app\.hubspot\.com/help-desk/[^\s\"]+", "", raw).strip()
+    return raw or "Untitled ticket"
+
+
 def format_citation_labels(indexes: Any, rows: list[dict[str, str]]) -> str:
     if not isinstance(indexes, list):
         return ""
@@ -508,6 +522,45 @@ def ticket_refs(indexes: list[int]) -> str:
     return f"Tickets {shown}"
 
 
+def render_html_ticket_refs(indexes: list[int], rows: list[dict[str, str]]) -> str:
+    if not indexes:
+        return ""
+    links: list[str] = []
+    for i in indexes[:5]:
+        if i < 1 or i > len(rows):
+            continue
+        url = extract_ticket_url(rows[i - 1])
+        label = f"#{i}"
+        if url:
+            links.append(f'<a href="{html_escape(url)}">{html_escape(label)}</a>')
+        else:
+            links.append(html_escape(label))
+    if not links:
+        return ""
+    prefix = "Ticket " if len(indexes) == 1 else "Tickets "
+    suffix = f", +{len(indexes) - 5}" if len(indexes) > 5 else ""
+    return prefix + ", ".join(links) + html_escape(suffix)
+
+
+def render_html_ticket_list(source_rows: list[dict[str, str]]) -> str:
+    if not source_rows:
+        return ""
+    items: list[str] = []
+    for row in source_rows:
+        title = extract_ticket_title(row)
+        url = extract_ticket_url(row)
+        if url:
+            items.append(f'<p class="ticket-list-item"><a href="{html_escape(url)}">{html_escape(title)}</a></p>')
+        else:
+            items.append(f'<p class="ticket-list-item">{html_escape(title)}</p>')
+    return (
+        '<table class="ticket-list-table"><tr><td>'
+        '<p class="ticket-list-label">Tickets</p>'
+        f"{''.join(items)}"
+        "</td></tr></table>"
+    )
+
+
 def top_issue_tags(rows: list[dict[str, str]], max_tags: int = 2) -> list[str]:
     counts: Counter[str] = Counter()
     for row in rows:
@@ -605,6 +658,8 @@ def render_html_account_sections(
                 )
             tags = top_issue_tags(source_rows)
             tag_html = render_html_tag_table(count, tags)
+            ticket_refs_html = render_html_ticket_refs(source_indexes, rows)
+            ticket_list_html = render_html_ticket_list(source_rows)
             action = strip_markdown_links(insight.get("next_step", ""))
             if account_manager == "Unassigned accounts":
                 action = "Assign account ownership so someone can follow up."
@@ -619,10 +674,11 @@ def render_html_account_sections(
                 '<table class="institution-card"><tr><td class="institution-card-cell">'
                 "<table class=\"institution-head\"><tr>"
                 f"<td class=\"institution-name\"><b>{html_escape(company)}</b></td>"
-                f"<td class=\"ticket-refs\">{html_escape(ticket_refs(source_indexes) or f'{count} {ticket_word(count)}')}</td>"
+                f"<td class=\"ticket-refs\">{ticket_refs_html or html_escape(f'{count} {ticket_word(count)}')}</td>"
                 "</tr></table>"
                 f"<p class=\"institution-summary\">{html_escape(trend)}</p>"
                 f"{tag_html}"
+                f"{ticket_list_html}"
                 f"{action_html}"
                 "</td></tr></table>"
             )
@@ -673,11 +729,17 @@ def render_final_report_html(
     .institution-head {{ border-collapse:collapse; width:100%; }}
     .institution-name {{ color:#1a3a5c; font-size:11pt; font-weight:700; width:70%; border:0pt solid #ffffff; }}
     .ticket-refs {{ color:#6b7280; font-size:9pt; text-align:right; width:30%; border:0pt solid #ffffff; }}
+    .ticket-refs a {{ color:#2e6da4; text-decoration:none; }}
     .institution-summary {{ color:#374151; font-size:10pt; line-height:1.3; margin:8pt 0; }}
     .tag-table {{ border-collapse:collapse; margin:4pt 0 7pt 0; }}
     .tag-cell {{ font-size:8pt; font-weight:700; padding:3pt 8pt; border:0; }}
     .count-tag {{ background:#f3f4f6; color:#6b7280; }}
     .issue-tag {{ background:#fef3c7; color:#92400e; }}
+    .ticket-list-table {{ border-collapse:collapse; width:100%; margin:3pt 0 7pt 0; }}
+    .ticket-list-table td {{ border:0pt solid #ffffff; background:#ffffff; padding:0; }}
+    .ticket-list-label {{ color:#6b7280; font-size:8pt; font-weight:700; margin-bottom:2pt; }}
+    .ticket-list-item {{ color:#2e6da4; font-size:8.5pt; line-height:1.2; margin:1pt 0; }}
+    .ticket-list-item a {{ color:#2e6da4; text-decoration:none; }}
     .action-table {{ border-collapse:collapse; width:100%; margin-top:4pt; }}
     .action-table td {{ border-top:0.5pt solid #d1d5db; border-left:0pt solid #ffffff; border-right:0pt solid #ffffff; border-bottom:0pt solid #ffffff; padding-top:5pt; }}
     .action {{ color:#2e6da4; font-size:9pt; }}
@@ -854,6 +916,10 @@ Return STRICT JSON with this exact shape:
 
 Rules:
 - Focus on trend surfacing plus one short account-manager follow-up step per institution.
+- Surface meaningful weak signals, not just the highest-volume categories.
+- A trend can be worth reporting with only 1-2 tickets when the issue is high-friction, risky, repeated within one institution, tied to setup/access/grading/billing, or likely preventable by account-manager outreach.
+- Prefer specific low-volume patterns over vague high-volume buckets.
+- Do not say no systemic trend exists just because the count is low; look for workflow, setup, integration, or misunderstanding patterns that could recur.
 - `next_step` should be an account-manager-facing next step, at most 16 words.
 - Keep `next_step` specific and practical; do not create broad action plans.
 - Leave `next_step` blank when there is no useful follow-up.
