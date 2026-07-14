@@ -104,9 +104,21 @@ def normalize_text(v: str) -> str:
 
 def normalize_person_name(value: str) -> str:
     name = normalize_text(value)
-    if not name or re.fullmatch(r"\d{6,}", name):
+    if not name or name.lower() == "unknown" or re.fullmatch(r"\d{6,}", name):
         return ""
     return name
+
+
+def is_valid_issue_label(value: str) -> bool:
+    label = normalize_text(value)
+    if not label:
+        return False
+    lowered = label.lower()
+    if lowered in {"unknown", "other", "none", "n/a", "na"}:
+        return False
+    if "@" in label or label.startswith("http"):
+        return False
+    return True
 
 
 
@@ -333,7 +345,6 @@ def compute_company_counts(rows: list[dict[str, str]]) -> tuple[list[dict[str, A
         account_manager = (
             normalize_person_name(r.get("Account Manager", ""))
             or normalize_person_name(r.get("Company Owner", ""))
-            or normalize_person_name(r.get("Owner", ""))
             or "Unknown"
         )
         account_manager_counts.setdefault(company, Counter())[account_manager] += 1
@@ -566,9 +577,7 @@ def top_issue_tags(rows: list[dict[str, str]], max_tags: int = 2) -> list[str]:
     for row in rows:
         for key in ("Subcategory", "Category"):
             value = normalize_text(row.get(key, ""))
-            if "@" in value or value.startswith("http"):
-                continue
-            if value and value.lower() not in {"unknown", "other", "none"}:
+            if is_valid_issue_label(value):
                 counts[value] += 1
     return [tag for tag, _ in counts.most_common(max_tags)]
 
@@ -822,23 +831,19 @@ def build_company_markdown_tables_by_account_manager(
 
 def build_fallback_trends_json(rows: list[dict[str, str]]) -> dict[str, Any]:
     """Deterministic fallback when Gemini is unavailable."""
-    category_counts = Counter(normalize_text(r.get("Category", "")) or "Other" for r in rows)
-    subcategory_counts = Counter(normalize_text(r.get("Subcategory", "")) or "Other" for r in rows)
+    issue_counts: Counter[str] = Counter()
+    for row in rows:
+        subcategory = normalize_text(row.get("Subcategory", ""))
+        category = normalize_text(row.get("Category", ""))
+        if is_valid_issue_label(subcategory):
+            issue_counts[subcategory] += 1
+        elif is_valid_issue_label(category):
+            issue_counts[category] += 1
 
     key_trends: list[dict[str, Any]] = []
-    for category, count in category_counts.most_common(5):
-        if category.lower() == "unknown":
-            continue
-        top_sub = ""
-        top_sub_count = 0
-        for sub, sub_count in subcategory_counts.items():
-            if sub_count > top_sub_count:
-                top_sub = sub
-                top_sub_count = sub_count
-        trend_label = f"Several tickets cluster around {category.lower()} workflows"
+    for issue, count in issue_counts.most_common(5):
+        trend_label = f"Several tickets cluster around {issue.lower()} workflows"
         why = f"{count} tickets mention this area in the current reporting period."
-        if top_sub and top_sub.lower() != "other":
-            why = f"{count} tickets, often tied to {top_sub.lower()}."
         key_trends.append(
             {
                 "trend": trend_label[:120],
@@ -850,8 +855,8 @@ def build_fallback_trends_json(rows: list[dict[str, str]]) -> dict[str, Any]:
     return {
         "key_trends": key_trends or [
             {
-                "trend": "No model-generated trend output available",
-                "why_it_matters": "Gemini call failed; report generated from deterministic counts only.",
+                "trend": "No reliable fallback trend labels available",
+                "why_it_matters": "Gemini call failed and issue labels were missing or unusable.",
                 "evidence_ticket_indexes": [],
             }
         ],
