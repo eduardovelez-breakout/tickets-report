@@ -350,7 +350,7 @@ def compute_company_counts(rows: list[dict[str, str]]) -> tuple[list[dict[str, A
         account_manager_counts.setdefault(company, Counter())[account_manager] += 1
     unknown_count = counts.get("Unknown", 0)
     ranked_counts = Counter({k: v for k, v in counts.items() if k != "Unknown"})
-    total_ranked = sum(ranked_counts.values())
+    total_ranked = sum(counts.values())
     out = []
     for company, cnt in ranked_counts.most_common():
         account_manager = "Unknown"
@@ -361,6 +361,16 @@ def compute_company_counts(rows: list[dict[str, str]]) -> tuple[list[dict[str, A
             "account_manager": account_manager,
             "ticket_count": cnt,
             "share_pct": round((cnt / total_ranked) * 100, 1) if total_ranked else 0.0,
+        })
+    if unknown_count:
+        account_manager = "Unknown"
+        if account_manager_counts.get("Unknown"):
+            account_manager = account_manager_counts["Unknown"].most_common(1)[0][0]
+        out.append({
+            "company": "Unknown",
+            "account_manager": account_manager,
+            "ticket_count": unknown_count,
+            "share_pct": round((unknown_count / total_ranked) * 100, 1) if total_ranked else 0.0,
         })
     return out, unknown_count
 
@@ -625,7 +635,7 @@ def render_html_account_sections(
     rows: list[dict[str, str]],
     company_counts: list[dict[str, Any]],
     institution_insight_map: dict[str, dict[str, str]],
-    limit: int = 20,
+    limit: int | None = None,
 ) -> str:
     indexes_by_company = company_row_indexes(rows)
     rows_by_company: dict[str, list[dict[str, str]]] = {}
@@ -634,7 +644,8 @@ def render_html_account_sections(
         rows_by_company.setdefault(company, []).append(row)
 
     grouped: dict[str, list[dict[str, Any]]] = {}
-    for company_row in company_counts[:limit]:
+    visible_company_counts = company_counts if limit is None else company_counts[:limit]
+    for company_row in visible_company_counts:
         am = normalize_text(str(company_row.get("account_manager") or "")) or "Unassigned accounts"
         if am.lower() == "unknown":
             am = "Unassigned accounts"
@@ -767,7 +778,7 @@ def render_final_report_html(
   </tr></table>
   {render_html_trend_box(trends_json)}
   <p class="section-label">ACCOUNTS</p>
-  {render_html_account_sections(rows, company_counts, institution_insight_map, limit=20)}
+  {render_html_account_sections(rows, company_counts, institution_insight_map)}
   <p class="footer">Questions about a specific ticket? Reach out to the support team. This report is generated weekly.</p>
 </body>
 </html>
